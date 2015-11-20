@@ -118,6 +118,8 @@ enum ieee80211_band {
  * @IEEE80211_CHAN_NO_10MHZ: 10 MHz bandwidth is not permitted
  *	on this channel.
  * @IEEE80211_CHAN_OCB_ONLY: only OCB mode is allowed on this channel.
+ * @IEEE80211_CHAN_USER_REGD_NEEDED: can only be used if allowed by
+ *	user-supplied regulatory domain.
  *
  */
 enum ieee80211_channel_flags {
@@ -135,6 +137,7 @@ enum ieee80211_channel_flags {
 	IEEE80211_CHAN_NO_20MHZ		= 1<<11,
 	IEEE80211_CHAN_NO_10MHZ		= 1<<12,
 	IEEE80211_CHAN_OCB_ONLY		= 1<<13,
+	IEEE80211_CHAN_USER_REGD_NEEDED	= 1<<14,
 };
 
 #define IEEE80211_CHAN_NO_HT40 \

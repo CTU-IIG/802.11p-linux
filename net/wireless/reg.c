@@ -1050,6 +1050,8 @@ static u32 map_regdom_flags(u32 rd_flags)
 		channel_flags |= IEEE80211_CHAN_NO_160MHZ;
 	if (rd_flags & NL80211_RRF_OCB_ONLY)
 		channel_flags |= IEEE80211_CHAN_OCB_ONLY;
+	if (rd_flags & NL80211_RRF_USER_REGD_NEEDED)
+		channel_flags |= IEEE80211_CHAN_USER_REGD_NEEDED;
 	return channel_flags;
 }
 
@@ -1278,6 +1280,16 @@ static void handle_channel(struct wiphy *wiphy,
 		}
 
 		return;
+	}
+
+	if (lr->initiator == NL80211_REGDOM_SET_BY_USER &&
+	    flags & IEEE80211_CHAN_USER_REGD_NEEDED) {
+		/* The driver allows using this frequency only if it
+		 * is allowed in user-supplied regulatory domain,
+		 * which is the case here. This is the only place
+		 * where a disabled channel can be enabled again.
+		 */
+		flags &= ~IEEE80211_CHAN_DISABLED;
 	}
 
 	chan->dfs_state = NL80211_DFS_USABLE;
@@ -1797,6 +1809,9 @@ static void handle_channel_custom(struct wiphy *wiphy,
 	chan->dfs_state = NL80211_DFS_USABLE;
 
 	chan->beacon_found = false;
+
+	if (reg_rule->flags & NL80211_RRF_USER_REGD_NEEDED)
+		chan->flags |= IEEE80211_CHAN_DISABLED;
 
 	if (wiphy->regulatory_flags & REGULATORY_WIPHY_SELF_MANAGED)
 		chan->flags = chan->orig_flags | bw_flags |

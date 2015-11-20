@@ -2866,6 +2866,9 @@ enum nl80211_sched_scan_match_attr {
  * @NL80211_RRF_NO_80MHZ: 80MHz operation not allowed
  * @NL80211_RRF_NO_160MHZ: 160MHz operation not allowed
  * @NL80211_RRF_OCB_ONLY: only OCB mode can be used here
+ * @NL80211_RRF_USER_REGD_NEEDED: when specified in driver's
+ *	CUSTOM_REG regulatory domain, the band can only be used if it
+ *	is also allowed in user-supplied regulatory domain.
  */
 enum nl80211_reg_rule_flags {
 	NL80211_RRF_NO_OFDM		= 1<<0,
@@ -2884,6 +2887,7 @@ enum nl80211_reg_rule_flags {
 	NL80211_RRF_NO_80MHZ		= 1<<15,
 	NL80211_RRF_NO_160MHZ		= 1<<16,
 	NL80211_RRF_OCB_ONLY		= 1<<17,
+	NL80211_RRF_USER_REGD_NEEDED	= 1<<18,
 };
 
 #define NL80211_RRF_PASSIVE_SCAN	NL80211_RRF_NO_IR
