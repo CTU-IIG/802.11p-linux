@@ -1236,9 +1236,9 @@ int cfg80211_wext_siwscan(struct net_device *dev,
 			continue;
 
 		for (j = 0; j < wiphy->bands[band]->n_channels; j++) {
-			/* ignore disabled channels */
+			/* ignore disabled and OCB-only channels */
 			if (wiphy->bands[band]->channels[j].flags &
-						IEEE80211_CHAN_DISABLED)
+			    (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_OCB_ONLY))
 				continue;
 
 			/* If we have a wireless request structure and the

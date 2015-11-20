@@ -258,9 +258,9 @@ int cfg80211_ibss_wext_join(struct cfg80211_registered_device *rdev,
 
 			for (i = 0; i < sband->n_channels; i++) {
 				chan = &sband->channels[i];
-				if (chan->flags & IEEE80211_CHAN_NO_IR)
-					continue;
-				if (chan->flags & IEEE80211_CHAN_DISABLED)
+				if (chan->flags & IEEE80211_CHAN_NO_IR ||
+				    chan->flags & IEEE80211_CHAN_DISABLED ||
+				    chan->flags & IEEE80211_CHAN_OCB_ONLY)
 					continue;
 				new_chan = chan;
 				break;
@@ -276,6 +276,9 @@ int cfg80211_ibss_wext_join(struct cfg80211_registered_device *rdev,
 		cfg80211_chandef_create(&wdev->wext.ibss.chandef, new_chan,
 					NL80211_CHAN_NO_HT);
 	}
+
+	if (wdev->wext.ibss.chandef.chan->flags & IEEE80211_CHAN_OCB_ONLY)
+		return -EINVAL;
 
 	/* don't join -- SSID is not there */
 	if (!wdev->wext.ibss.ssid_len)
@@ -331,7 +334,8 @@ int cfg80211_ibss_wext_siwfreq(struct net_device *dev,
 		if (!chan)
 			return -EINVAL;
 		if (chan->flags & IEEE80211_CHAN_NO_IR ||
-		    chan->flags & IEEE80211_CHAN_DISABLED)
+		    chan->flags & IEEE80211_CHAN_DISABLED ||
+		    chan->flags & IEEE80211_CHAN_OCB_ONLY)
 			return -EINVAL;
 	}
 

@@ -1048,6 +1048,8 @@ static u32 map_regdom_flags(u32 rd_flags)
 		channel_flags |= IEEE80211_CHAN_NO_80MHZ;
 	if (rd_flags & NL80211_RRF_NO_160MHZ)
 		channel_flags |= IEEE80211_CHAN_NO_160MHZ;
+	if (rd_flags & NL80211_RRF_OCB_ONLY)
+		channel_flags |= IEEE80211_CHAN_OCB_ONLY;
 	return channel_flags;
 }
 

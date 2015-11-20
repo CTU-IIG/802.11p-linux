@@ -804,7 +804,8 @@ static bool _cfg80211_reg_can_beacon(struct wiphy *wiphy,
 {
 	bool res;
 	u32 prohibited_flags = IEEE80211_CHAN_DISABLED |
-			       IEEE80211_CHAN_RADAR;
+			       IEEE80211_CHAN_RADAR |
+			       IEEE80211_CHAN_OCB_ONLY;
 
 	trace_cfg80211_reg_can_beacon(wiphy, chandef, iftype, check_no_ir);
 
@@ -814,7 +815,8 @@ static bool _cfg80211_reg_can_beacon(struct wiphy *wiphy,
 	if (cfg80211_chandef_dfs_required(wiphy, chandef, iftype) > 0 &&
 	    cfg80211_chandef_dfs_available(wiphy, chandef)) {
 		/* We can skip IEEE80211_CHAN_NO_IR if chandef dfs available */
-		prohibited_flags = IEEE80211_CHAN_DISABLED;
+		prohibited_flags = IEEE80211_CHAN_DISABLED |
+				   IEEE80211_CHAN_OCB_ONLY;
 	}
 
 	res = cfg80211_chandef_usable(wiphy, chandef, prohibited_flags);

@@ -5860,8 +5860,8 @@ static int nl80211_trigger_scan(struct sk_buff *skb, struct genl_info *info)
 				goto out_free;
 			}
 
-			/* ignore disabled channels */
-			if (chan->flags & IEEE80211_CHAN_DISABLED)
+			/* ignore disabled and OCB-only channels */
+			if (chan->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_OCB_ONLY))
 				continue;
 
 			request->channels[i] = chan;
@@ -5880,7 +5880,7 @@ static int nl80211_trigger_scan(struct sk_buff *skb, struct genl_info *info)
 
 				chan = &wiphy->bands[band]->channels[j];
 
-				if (chan->flags & IEEE80211_CHAN_DISABLED)
+				if (chan->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_OCB_ONLY))
 					continue;
 
 				request->channels[i] = chan;
@@ -6247,8 +6247,8 @@ nl80211_parse_sched_scan(struct wiphy *wiphy, struct wireless_dev *wdev,
 				goto out_free;
 			}
 
-			/* ignore disabled channels */
-			if (chan->flags & IEEE80211_CHAN_DISABLED)
+			/* ignore disabled and OCB-only channels */
+			if (chan->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_OCB_ONLY))
 				continue;
 
 			request->channels[i] = chan;
@@ -6265,7 +6265,7 @@ nl80211_parse_sched_scan(struct wiphy *wiphy, struct wireless_dev *wdev,
 
 				chan = &wiphy->bands[band]->channels[j];
 
-				if (chan->flags & IEEE80211_CHAN_DISABLED)
+				if (chan->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_OCB_ONLY))
 					continue;
 
 				request->channels[i] = chan;

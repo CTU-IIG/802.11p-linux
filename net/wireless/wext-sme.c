@@ -83,7 +83,8 @@ int cfg80211_mgd_wext_siwfreq(struct net_device *dev,
 		chan = ieee80211_get_channel(wdev->wiphy, freq);
 		if (!chan)
 			return -EINVAL;
-		if (chan->flags & IEEE80211_CHAN_DISABLED)
+		if (chan->flags & IEEE80211_CHAN_DISABLED ||
+		    chan->flags & IEEE80211_CHAN_OCB_ONLY)
 			return -EINVAL;
 	}
 

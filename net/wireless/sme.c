@@ -103,7 +103,8 @@ static int cfg80211_conn_scan(struct wireless_dev *wdev)
 				continue;
 			for (j = 0; j < bands->n_channels; j++) {
 				channel = &bands->channels[j];
-				if (channel->flags & IEEE80211_CHAN_DISABLED)
+				if (channel->flags & IEEE80211_CHAN_DISABLED ||
+				    channel->flags & IEEE80211_CHAN_OCB_ONLY)
 					continue;
 				request->channels[i++] = channel;
 			}

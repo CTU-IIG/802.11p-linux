@@ -143,7 +143,8 @@ int __cfg80211_join_mesh(struct cfg80211_registered_device *rdev,
 				chan = &sband->channels[i];
 				if (chan->flags & (IEEE80211_CHAN_NO_IR |
 						   IEEE80211_CHAN_DISABLED |
-						   IEEE80211_CHAN_RADAR))
+						   IEEE80211_CHAN_RADAR |
+						   IEEE80211_CHAN_OCB_ONLY))
 					continue;
 				setup->chandef.chan = chan;
 				break;
