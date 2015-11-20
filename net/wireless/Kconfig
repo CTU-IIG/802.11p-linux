@@ -132,6 +132,33 @@ config CFG80211_REG_RELAX_NO_IR
 	 support this feature by declaring the appropriate channel flags and
 	 capabilities in their registration flow.
 
+config CFG80211_REG_ITSG5_BAND
+	bool "cfg80211 support for ITS-G5 band (5.9 GHz)"
+	def_bool n
+	depends on CFG80211_CERTIFICATION_ONUS
+	---help---
+	This option enables support for Inteligent Transportation System (ITS)
+	band i.e. frequencies from 5.850 to 5.925 GHz. In Europe, the band is
+	standardized in the ETSI EN 302 663 standard. The use of this band is
+	restricted by regulatory documents mentioned below. Enable this option
+	only if you comply with them.
+
+	In Europe, the band is split into several sub-bands regulated by
+	separate documents:
+
+	- ITS-G5A (5.875 to 5.905 GHz) band is reserved for ITS road safety
+	  related applications and is regulated by Commission Decision
+	  2008/671/EC.
+
+	- ITS-G5B (5.855 to 5.875 GHz) band is reserved for ITS non-safety
+	  applications and is regulated by ECC Recommendation ECC/REC/(08)01.
+
+	- ITS-G5D (5.905 to 5.925 GHz) band is reserved for future ITS
+	  applications and is regulated by ECC Decision ECC/DEC(02)01.
+
+	In the US, the band is regulated by FCC 03-324 and the devices using it
+	must be certified.
+
 config CFG80211_DEFAULT_PS
 	bool "enable powersave by default"
 	depends on CFG80211
