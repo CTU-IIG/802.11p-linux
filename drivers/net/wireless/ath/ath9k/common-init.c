@@ -86,6 +86,25 @@ static const struct ieee80211_channel ath9k_5ghz_chantable[] = {
 	CHAN5G(5785, 35), /* Channel 157 */
 	CHAN5G(5805, 36), /* Channel 161 */
 	CHAN5G(5825, 37), /* Channel 165 */
+
+	/* ITS-G5B */
+	CHAN5G(5855, 38), /* Channel 171 */
+	CHAN5G(5860, 39), /* Channel 172 */
+	CHAN5G(5865, 40), /* Channel 173 */
+	CHAN5G(5870, 41), /* Channel 174 */
+	/* ITS-G5A */
+	CHAN5G(5875, 42), /* Channel 175 */
+	CHAN5G(5880, 43), /* Channel 176 */
+	CHAN5G(5885, 44), /* Channel 177 */
+	CHAN5G(5890, 45), /* Channel 178 */
+	CHAN5G(5895, 46), /* Channel 179 */
+	CHAN5G(5900, 47), /* Channel 180 */
+	CHAN5G(5905, 48), /* Channel 181 */
+	/* ITS-G5D */
+	CHAN5G(5910, 49), /* Channel 182 */
+	CHAN5G(5915, 50), /* Channel 183 */
+	CHAN5G(5920, 51), /* Channel 184 */
+	CHAN5G(5925, 52), /* Channel 185 */
 };
 
 /* Atheros hardware rate code addition for short premble */
