@@ -417,7 +417,7 @@ dl {
 dt {
     float: left;
     clear: left;
-    width: 10ex;
+    width: 12ex;
     text-align: right;
     font-weight: bold;
 }
@@ -425,6 +425,6 @@ dt:after {
     content: ":";
 }
 dd {
-    margin: 0 0 0 12ex;
+    margin: 0 0 0 14ex;
     padding: 0 0 0.5em 0;
 }
