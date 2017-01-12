@@ -19,7 +19,7 @@ News
 about [Vehicle2Vehicle Communication based on IEEE 802.11p](http://halfnarp.events.ccc.de/).
 
 2015-11-23
-: Patches for supporting 5.9 GHz band [posted](http://article.gmane.org/gmane.linux.kernel.wireless.general/145567).
+: Patches for supporting 5.9 GHz band [posted](https://www.mail-archive.com/ath9k-devel@lists.ath9k.org/msg13886.html).
 
 2015-09-29
 : Patch adding OCB mode support to ath9k driver
