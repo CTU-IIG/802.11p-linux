@@ -27,7 +27,7 @@
 #include <linux/ioctl.h>
 
 #define KFD_IOCTL_MAJOR_VERSION 1
-#define KFD_IOCTL_MINOR_VERSION 0
+#define KFD_IOCTL_MINOR_VERSION 1
 
 struct kfd_ioctl_get_version_args {
 	uint32_t major_version;	/* from KFD */
@@ -128,27 +128,165 @@ struct kfd_ioctl_get_process_apertures_args {
 	uint32_t pad;
 };
 
-#define KFD_IOC_MAGIC 'K'
+#define MAX_ALLOWED_NUM_POINTS    100
+#define MAX_ALLOWED_AW_BUFF_SIZE 4096
+#define MAX_ALLOWED_WAC_BUFF_SIZE  128
 
-#define KFD_IOC_GET_VERSION \
-		_IOR(KFD_IOC_MAGIC, 1, struct kfd_ioctl_get_version_args)
+struct kfd_ioctl_dbg_register_args {
+	uint32_t gpu_id;		/* to KFD */
+	uint32_t pad;
+};
 
-#define KFD_IOC_CREATE_QUEUE \
-		_IOWR(KFD_IOC_MAGIC, 2, struct kfd_ioctl_create_queue_args)
+struct kfd_ioctl_dbg_unregister_args {
+	uint32_t gpu_id;		/* to KFD */
+	uint32_t pad;
+};
 
-#define KFD_IOC_DESTROY_QUEUE \
-	_IOWR(KFD_IOC_MAGIC, 3, struct kfd_ioctl_destroy_queue_args)
+struct kfd_ioctl_dbg_address_watch_args {
+	uint64_t content_ptr;		/* a pointer to the actual content */
+	uint32_t gpu_id;		/* to KFD */
+	uint32_t buf_size_in_bytes;	/*including gpu_id and buf_size */
+};
 
-#define KFD_IOC_SET_MEMORY_POLICY \
-	_IOW(KFD_IOC_MAGIC, 4, struct kfd_ioctl_set_memory_policy_args)
+struct kfd_ioctl_dbg_wave_control_args {
+	uint64_t content_ptr;		/* a pointer to the actual content */
+	uint32_t gpu_id;		/* to KFD */
+	uint32_t buf_size_in_bytes;	/*including gpu_id and buf_size */
+};
 
-#define KFD_IOC_GET_CLOCK_COUNTERS \
-	_IOWR(KFD_IOC_MAGIC, 5, struct kfd_ioctl_get_clock_counters_args)
+/* Matching HSA_EVENTTYPE */
+#define KFD_IOC_EVENT_SIGNAL			0
+#define KFD_IOC_EVENT_NODECHANGE		1
+#define KFD_IOC_EVENT_DEVICESTATECHANGE		2
+#define KFD_IOC_EVENT_HW_EXCEPTION		3
+#define KFD_IOC_EVENT_SYSTEM_EVENT		4
+#define KFD_IOC_EVENT_DEBUG_EVENT		5
+#define KFD_IOC_EVENT_PROFILE_EVENT		6
+#define KFD_IOC_EVENT_QUEUE_EVENT		7
+#define KFD_IOC_EVENT_MEMORY			8
 
-#define KFD_IOC_GET_PROCESS_APERTURES \
-	_IOR(KFD_IOC_MAGIC, 6, struct kfd_ioctl_get_process_apertures_args)
+#define KFD_IOC_WAIT_RESULT_COMPLETE		0
+#define KFD_IOC_WAIT_RESULT_TIMEOUT		1
+#define KFD_IOC_WAIT_RESULT_FAIL		2
 
-#define KFD_IOC_UPDATE_QUEUE \
-	_IOW(KFD_IOC_MAGIC, 7, struct kfd_ioctl_update_queue_args)
+#define KFD_SIGNAL_EVENT_LIMIT			256
+
+struct kfd_ioctl_create_event_args {
+	uint64_t event_page_offset;	/* from KFD */
+	uint32_t event_trigger_data;	/* from KFD - signal events only */
+	uint32_t event_type;		/* to KFD */
+	uint32_t auto_reset;		/* to KFD */
+	uint32_t node_id;		/* to KFD - only valid for certain
+							event types */
+	uint32_t event_id;		/* from KFD */
+	uint32_t event_slot_index;	/* from KFD */
+};
+
+struct kfd_ioctl_destroy_event_args {
+	uint32_t event_id;		/* to KFD */
+	uint32_t pad;
+};
+
+struct kfd_ioctl_set_event_args {
+	uint32_t event_id;		/* to KFD */
+	uint32_t pad;
+};
+
+struct kfd_ioctl_reset_event_args {
+	uint32_t event_id;		/* to KFD */
+	uint32_t pad;
+};
+
+struct kfd_memory_exception_failure {
+	uint32_t NotPresent;	/* Page not present or supervisor privilege */
+	uint32_t ReadOnly;	/* Write access to a read-only page */
+	uint32_t NoExecute;	/* Execute access to a page marked NX */
+	uint32_t pad;
+};
+
+/* memory exception data*/
+struct kfd_hsa_memory_exception_data {
+	struct kfd_memory_exception_failure failure;
+	uint64_t va;
+	uint32_t gpu_id;
+	uint32_t pad;
+};
+
+/* Event data*/
+struct kfd_event_data {
+	union {
+		struct kfd_hsa_memory_exception_data memory_exception_data;
+	};				/* From KFD */
+	uint64_t kfd_event_data_ext;	/* pointer to an extension structure
+					   for future exception types */
+	uint32_t event_id;		/* to KFD */
+	uint32_t pad;
+};
+
+struct kfd_ioctl_wait_events_args {
+	uint64_t events_ptr;		/* pointed to struct
+					   kfd_event_data array, to KFD */
+	uint32_t num_events;		/* to KFD */
+	uint32_t wait_for_all;		/* to KFD */
+	uint32_t timeout;		/* to KFD */
+	uint32_t wait_result;		/* from KFD */
+};
+
+#define AMDKFD_IOCTL_BASE 'K'
+#define AMDKFD_IO(nr)			_IO(AMDKFD_IOCTL_BASE, nr)
+#define AMDKFD_IOR(nr, type)		_IOR(AMDKFD_IOCTL_BASE, nr, type)
+#define AMDKFD_IOW(nr, type)		_IOW(AMDKFD_IOCTL_BASE, nr, type)
+#define AMDKFD_IOWR(nr, type)		_IOWR(AMDKFD_IOCTL_BASE, nr, type)
+
+#define AMDKFD_IOC_GET_VERSION			\
+		AMDKFD_IOR(0x01, struct kfd_ioctl_get_version_args)
+
+#define AMDKFD_IOC_CREATE_QUEUE			\
+		AMDKFD_IOWR(0x02, struct kfd_ioctl_create_queue_args)
+
+#define AMDKFD_IOC_DESTROY_QUEUE		\
+		AMDKFD_IOWR(0x03, struct kfd_ioctl_destroy_queue_args)
+
+#define AMDKFD_IOC_SET_MEMORY_POLICY		\
+		AMDKFD_IOW(0x04, struct kfd_ioctl_set_memory_policy_args)
+
+#define AMDKFD_IOC_GET_CLOCK_COUNTERS		\
+		AMDKFD_IOWR(0x05, struct kfd_ioctl_get_clock_counters_args)
+
+#define AMDKFD_IOC_GET_PROCESS_APERTURES	\
+		AMDKFD_IOR(0x06, struct kfd_ioctl_get_process_apertures_args)
+
+#define AMDKFD_IOC_UPDATE_QUEUE			\
+		AMDKFD_IOW(0x07, struct kfd_ioctl_update_queue_args)
+
+#define AMDKFD_IOC_CREATE_EVENT			\
+		AMDKFD_IOWR(0x08, struct kfd_ioctl_create_event_args)
+
+#define AMDKFD_IOC_DESTROY_EVENT		\
+		AMDKFD_IOW(0x09, struct kfd_ioctl_destroy_event_args)
+
+#define AMDKFD_IOC_SET_EVENT			\
+		AMDKFD_IOW(0x0A, struct kfd_ioctl_set_event_args)
+
+#define AMDKFD_IOC_RESET_EVENT			\
+		AMDKFD_IOW(0x0B, struct kfd_ioctl_reset_event_args)
+
+#define AMDKFD_IOC_WAIT_EVENTS			\
+		AMDKFD_IOWR(0x0C, struct kfd_ioctl_wait_events_args)
+
+#define AMDKFD_IOC_DBG_REGISTER			\
+		AMDKFD_IOW(0x0D, struct kfd_ioctl_dbg_register_args)
+
+#define AMDKFD_IOC_DBG_UNREGISTER		\
+		AMDKFD_IOW(0x0E, struct kfd_ioctl_dbg_unregister_args)
+
+#define AMDKFD_IOC_DBG_ADDRESS_WATCH		\
+		AMDKFD_IOW(0x0F, struct kfd_ioctl_dbg_address_watch_args)
+
+#define AMDKFD_IOC_DBG_WAVE_CONTROL		\
+		AMDKFD_IOW(0x10, struct kfd_ioctl_dbg_wave_control_args)
+
+#define AMDKFD_COMMAND_START		0x01
+#define AMDKFD_COMMAND_END		0x11
 
 #endif

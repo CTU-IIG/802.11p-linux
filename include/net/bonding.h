@@ -30,29 +30,13 @@
 #include <net/bond_alb.h>
 #include <net/bond_options.h>
 
-#define DRV_VERSION	"3.7.1"
-#define DRV_RELDATE	"April 27, 2011"
-#define DRV_NAME	"bonding"
-#define DRV_DESCRIPTION	"Ethernet Channel Bonding Driver"
-
-#define bond_version DRV_DESCRIPTION ": v" DRV_VERSION " (" DRV_RELDATE ")\n"
-
 #define BOND_MAX_ARP_TARGETS	16
 
 #define BOND_DEFAULT_MIIMON	100
 
-/*
- * Less bad way to call ioctl from within the kernel; this needs to be
- * done some other way to get the call out of interrupt context.
- * Needs "ioctl" variable to be supplied by calling context.
- */
-#define IOCTL(dev, arg, cmd) ({		\
-	int res = 0;			\
-	mm_segment_t fs = get_fs();	\
-	set_fs(get_ds());		\
-	res = ioctl(dev, arg, cmd);	\
-	set_fs(fs);			\
-	res; })
+#ifndef __long_aligned
+#define __long_aligned __attribute__((aligned((sizeof(long)))))
+#endif
 
 #define BOND_MODE(bond) ((bond)->params.mode)
 
@@ -143,11 +127,22 @@ struct bond_params {
 	int packets_per_slave;
 	int tlb_dynamic_lb;
 	struct reciprocal_value reciprocal_packets_per_slave;
+	u16 ad_actor_sys_prio;
+	u16 ad_user_port_key;
+
+	/* 2 bytes of padding : see ether_addr_equal_64bits() */
+	u8 ad_actor_system[ETH_ALEN + 2];
 };
 
 struct bond_parm_tbl {
 	char *modename;
 	int mode;
+};
+
+struct netdev_notify_work {
+	struct delayed_work	work;
+	struct net_device	*dev;
+	struct netdev_bonding_info bonding_info;
 };
 
 struct slave {
@@ -158,18 +153,20 @@ struct slave {
 	unsigned long last_link_up;
 	unsigned long last_rx;
 	unsigned long target_last_arp_rx[BOND_MAX_ARP_TARGETS];
-	s8     link;    /* one of BOND_LINK_XXXX */
+	s8     link;		/* one of BOND_LINK_XXXX */
+	s8     link_new_state;	/* one of BOND_LINK_XXXX */
 	s8     new_link;
 	u8     backup:1,   /* indicates backup slave. Value corresponds with
 			      BOND_STATE_ACTIVE and BOND_STATE_BACKUP */
 	       inactive:1, /* indicates inactive slave */
-	       should_notify:1; /* indicateds whether the state changed */
+	       should_notify:1, /* indicates whether the state changed */
+	       should_notify_link:1; /* indicates whether the link changed */
 	u8     duplex;
 	u32    original_mtu;
 	u32    link_failure_count;
 	u32    speed;
 	u16    queue_id;
-	u8     perm_hwaddr[ETH_ALEN];
+	u8     perm_hwaddr[MAX_ADDR_LEN];
 	struct ad_slave_info *ad_info;
 	struct tlb_slave_info tlb_info;
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -212,6 +209,7 @@ struct bonding {
 	 * ALB mode (6) - to sync the use and modifications of its hash table
 	 */
 	spinlock_t mode_lock;
+	spinlock_t stats_lock;
 	u8	 send_peer_notif;
 	u8       igmp_retrans;
 #ifdef CONFIG_PROC_FS
@@ -242,6 +240,9 @@ struct bonding {
 
 #define bond_slave_get_rtnl(dev) \
 	((struct slave *) rtnl_dereference(dev->rx_handler_data))
+
+void bond_queue_slave_event(struct slave *slave);
+void bond_lower_state_changed(struct slave *slave);
 
 struct bond_vlan_tag {
 	__be16		vlan_proto;
@@ -306,6 +307,13 @@ static inline bool bond_uses_primary(struct bonding *bond)
 	return bond_mode_uses_primary(BOND_MODE(bond));
 }
 
+static inline struct net_device *bond_option_active_slave_get_rcu(struct bonding *bond)
+{
+	struct slave *slave = rcu_dereference(bond->curr_active_slave);
+
+	return bond_uses_primary(bond) && slave ? slave->dev : NULL;
+}
+
 static inline bool bond_slave_is_up(struct slave *slave)
 {
 	return netif_running(slave->dev) && netif_carrier_ok(slave->dev);
@@ -315,6 +323,8 @@ static inline void bond_set_active_slave(struct slave *slave)
 {
 	if (slave->backup) {
 		slave->backup = 0;
+		bond_queue_slave_event(slave);
+		bond_lower_state_changed(slave);
 		rtmsg_ifinfo(RTM_NEWLINK, slave->dev, 0, GFP_ATOMIC);
 	}
 }
@@ -323,6 +333,8 @@ static inline void bond_set_backup_slave(struct slave *slave)
 {
 	if (!slave->backup) {
 		slave->backup = 1;
+		bond_queue_slave_event(slave);
+		bond_lower_state_changed(slave);
 		rtmsg_ifinfo(RTM_NEWLINK, slave->dev, 0, GFP_ATOMIC);
 	}
 }
@@ -335,7 +347,9 @@ static inline void bond_set_slave_state(struct slave *slave,
 
 	slave->backup = slave_state;
 	if (notify) {
+		bond_lower_state_changed(slave);
 		rtmsg_ifinfo(RTM_NEWLINK, slave->dev, 0, GFP_ATOMIC);
+		bond_queue_slave_event(slave);
 		slave->should_notify = 0;
 	} else {
 		if (slave->should_notify)
@@ -365,6 +379,7 @@ static inline void bond_slave_state_notify(struct bonding *bond)
 
 	bond_for_each_slave(bond, tmp, iter) {
 		if (tmp->should_notify) {
+			bond_lower_state_changed(tmp);
 			rtmsg_ifinfo(RTM_NEWLINK, tmp->dev, 0, GFP_ATOMIC);
 			tmp->should_notify = 0;
 		}
@@ -385,6 +400,16 @@ static inline bool bond_slave_can_tx(struct slave *slave)
 {
 	return bond_slave_is_up(slave) && slave->link == BOND_LINK_UP &&
 	       bond_is_active_slave(slave);
+}
+
+static inline void bond_hw_addr_copy(u8 *dst, const u8 *src, unsigned int len)
+{
+	if (len == ETH_ALEN) {
+		ether_addr_copy(dst, src);
+		return;
+	}
+
+	memcpy(dst, src, len);
 }
 
 #define BOND_PRI_RESELECT_ALWAYS	0
@@ -490,6 +515,50 @@ static inline bool bond_is_slave_inactive(struct slave *slave)
 	return slave->inactive;
 }
 
+static inline void bond_propose_link_state(struct slave *slave, int state)
+{
+	slave->link_new_state = state;
+}
+
+static inline void bond_commit_link_state(struct slave *slave, bool notify)
+{
+	if (slave->link == slave->link_new_state)
+		return;
+
+	slave->link = slave->link_new_state;
+	if (notify) {
+		bond_queue_slave_event(slave);
+		bond_lower_state_changed(slave);
+		slave->should_notify_link = 0;
+	} else {
+		if (slave->should_notify_link)
+			slave->should_notify_link = 0;
+		else
+			slave->should_notify_link = 1;
+	}
+}
+
+static inline void bond_set_slave_link_state(struct slave *slave, int state,
+					     bool notify)
+{
+	bond_propose_link_state(slave, state);
+	bond_commit_link_state(slave, notify);
+}
+
+static inline void bond_slave_link_notify(struct bonding *bond)
+{
+	struct list_head *iter;
+	struct slave *tmp;
+
+	bond_for_each_slave(bond, tmp, iter) {
+		if (tmp->should_notify_link) {
+			bond_queue_slave_event(tmp);
+			bond_lower_state_changed(tmp);
+			tmp->should_notify_link = 0;
+		}
+	}
+}
+
 static inline __be32 bond_confirm_addr(struct net_device *dev, __be32 dst, __be32 local)
 {
 	struct in_device *in_dev;
@@ -525,6 +594,7 @@ void bond_sysfs_slave_del(struct slave *slave);
 int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev);
 int bond_release(struct net_device *bond_dev, struct net_device *slave_dev);
 u32 bond_xmit_hash(struct bonding *bond, struct sk_buff *skb);
+int bond_set_carrier(struct bonding *bond);
 void bond_select_active_slave(struct bonding *bond);
 void bond_change_active_slave(struct bonding *bond, struct slave *new_active);
 void bond_create_debugfs(void);
@@ -544,6 +614,7 @@ struct bond_vlan_tag *bond_verify_device_path(struct net_device *start_dev,
 					      int level);
 int bond_update_slave_arr(struct bonding *bond, struct slave *skipslave);
 void bond_slave_arr_work_rearm(struct bonding *bond, unsigned long delay);
+void bond_work_init_all(struct bonding *bond);
 
 #ifdef CONFIG_PROC_FS
 void bond_create_proc_entry(struct bonding *bond);
@@ -633,7 +704,7 @@ static inline int bond_get_targets_ip(__be32 *targets, __be32 ip)
 }
 
 /* exported from bond_main.c */
-extern int bond_net_id;
+extern unsigned int bond_net_id;
 extern const struct bond_parm_tbl bond_lacp_tbl[];
 extern const struct bond_parm_tbl xmit_hashtype_tbl[];
 extern const struct bond_parm_tbl arp_validate_tbl[];

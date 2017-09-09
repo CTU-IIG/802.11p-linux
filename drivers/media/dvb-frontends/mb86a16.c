@@ -593,7 +593,7 @@ err:
 	return -EREMOTEIO;
 }
 
-static int mb86a16_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int mb86a16_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	u8 stat, stat2;
 	struct mb86a16_state *state = fe->demodulator_priv;
@@ -1562,7 +1562,8 @@ err:
 	return -EREMOTEIO;
 }
 
-static int mb86a16_send_diseqc_burst(struct dvb_frontend *fe, fe_sec_mini_cmd_t burst)
+static int mb86a16_send_diseqc_burst(struct dvb_frontend *fe,
+				     enum fe_sec_mini_cmd burst)
 {
 	struct mb86a16_state *state = fe->demodulator_priv;
 
@@ -1590,7 +1591,7 @@ err:
 	return -EREMOTEIO;
 }
 
-static int mb86a16_set_tone(struct dvb_frontend *fe, fe_sec_tone_mode_t tone)
+static int mb86a16_set_tone(struct dvb_frontend *fe, enum fe_sec_tone_mode tone)
 {
 	struct mb86a16_state *state = fe->demodulator_priv;
 
@@ -1815,7 +1816,7 @@ static enum dvbfe_algo mb86a16_frontend_algo(struct dvb_frontend *fe)
 	return DVBFE_ALGO_CUSTOM;
 }
 
-static struct dvb_frontend_ops mb86a16_ops = {
+static const struct dvb_frontend_ops mb86a16_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name			= "Fujitsu MB86A16 DVB-S",

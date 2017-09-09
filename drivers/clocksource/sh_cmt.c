@@ -103,7 +103,6 @@ struct sh_cmt_channel {
 	unsigned long match_value;
 	unsigned long next_match_value;
 	unsigned long max_match_value;
-	unsigned long rate;
 	raw_spinlock_t lock;
 	struct clock_event_device ced;
 	struct clocksource cs;
@@ -118,6 +117,7 @@ struct sh_cmt_device {
 
 	void __iomem *mapbase;
 	struct clk *clk;
+	unsigned long rate;
 
 	raw_spinlock_t lock; /* Protect the shared start/stop register */
 
@@ -320,7 +320,7 @@ static void sh_cmt_start_stop_ch(struct sh_cmt_channel *ch, int start)
 	raw_spin_unlock_irqrestore(&ch->cmt->lock, flags);
 }
 
-static int sh_cmt_enable(struct sh_cmt_channel *ch, unsigned long *rate)
+static int sh_cmt_enable(struct sh_cmt_channel *ch)
 {
 	int k, ret;
 
@@ -340,11 +340,9 @@ static int sh_cmt_enable(struct sh_cmt_channel *ch, unsigned long *rate)
 
 	/* configure channel, periodic mode and maximum timeout */
 	if (ch->cmt->info->width == 16) {
-		*rate = clk_get_rate(ch->cmt->clk) / 512;
 		sh_cmt_write_cmcsr(ch, SH_CMT16_CMCSR_CMIE |
 				   SH_CMT16_CMCSR_CKS512);
 	} else {
-		*rate = clk_get_rate(ch->cmt->clk) / 8;
 		sh_cmt_write_cmcsr(ch, SH_CMT32_CMCSR_CMM |
 				   SH_CMT32_CMCSR_CMTOUT_IE |
 				   SH_CMT32_CMCSR_CMR_IRQ |
@@ -538,7 +536,7 @@ static irqreturn_t sh_cmt_interrupt(int irq, void *dev_id)
 
 	if (ch->flags & FLAG_CLOCKEVENT) {
 		if (!(ch->flags & FLAG_SKIPEVENT)) {
-			if (ch->ced.mode == CLOCK_EVT_MODE_ONESHOT) {
+			if (clockevent_state_oneshot(&ch->ced)) {
 				ch->next_match_value = ch->max_match_value;
 				ch->flags |= FLAG_REPROGRAM;
 			}
@@ -554,7 +552,7 @@ static irqreturn_t sh_cmt_interrupt(int irq, void *dev_id)
 		sh_cmt_clock_event_program_verify(ch, 1);
 
 		if (ch->flags & FLAG_CLOCKEVENT)
-			if ((ch->ced.mode == CLOCK_EVT_MODE_SHUTDOWN)
+			if ((clockevent_state_shutdown(&ch->ced))
 			    || (ch->match_value == ch->next_match_value))
 				ch->flags &= ~FLAG_REPROGRAM;
 	}
@@ -572,7 +570,7 @@ static int sh_cmt_start(struct sh_cmt_channel *ch, unsigned long flag)
 	raw_spin_lock_irqsave(&ch->lock, flags);
 
 	if (!(ch->flags & (FLAG_CLOCKEVENT | FLAG_CLOCKSOURCE)))
-		ret = sh_cmt_enable(ch, &ch->rate);
+		ret = sh_cmt_enable(ch);
 
 	if (ret)
 		goto out;
@@ -612,7 +610,7 @@ static struct sh_cmt_channel *cs_to_sh_cmt(struct clocksource *cs)
 	return container_of(cs, struct sh_cmt_channel, cs);
 }
 
-static cycle_t sh_cmt_clocksource_read(struct clocksource *cs)
+static u64 sh_cmt_clocksource_read(struct clocksource *cs)
 {
 	struct sh_cmt_channel *ch = cs_to_sh_cmt(cs);
 	unsigned long flags, raw;
@@ -640,10 +638,9 @@ static int sh_cmt_clocksource_enable(struct clocksource *cs)
 	ch->total_cycles = 0;
 
 	ret = sh_cmt_start(ch, FLAG_CLOCKSOURCE);
-	if (!ret) {
-		__clocksource_updatefreq_hz(cs, ch->rate);
+	if (!ret)
 		ch->cs_enabled = true;
-	}
+
 	return ret;
 }
 
@@ -661,6 +658,9 @@ static void sh_cmt_clocksource_suspend(struct clocksource *cs)
 {
 	struct sh_cmt_channel *ch = cs_to_sh_cmt(cs);
 
+	if (!ch->cs_enabled)
+		return;
+
 	sh_cmt_stop(ch, FLAG_CLOCKSOURCE);
 	pm_genpd_syscore_poweroff(&ch->cmt->pdev->dev);
 }
@@ -668,6 +668,9 @@ static void sh_cmt_clocksource_suspend(struct clocksource *cs)
 static void sh_cmt_clocksource_resume(struct clocksource *cs)
 {
 	struct sh_cmt_channel *ch = cs_to_sh_cmt(cs);
+
+	if (!ch->cs_enabled)
+		return;
 
 	pm_genpd_syscore_poweron(&ch->cmt->pdev->dev);
 	sh_cmt_start(ch, FLAG_CLOCKSOURCE);
@@ -691,8 +694,7 @@ static int sh_cmt_register_clocksource(struct sh_cmt_channel *ch,
 	dev_info(&ch->cmt->pdev->dev, "ch%u: used as clock source\n",
 		 ch->index);
 
-	/* Register with dummy 1 Hz value, gets updated in ->enable() */
-	clocksource_register_hz(cs, 1);
+	clocksource_register_hz(cs, ch->cmt->rate);
 	return 0;
 }
 
@@ -703,56 +705,45 @@ static struct sh_cmt_channel *ced_to_sh_cmt(struct clock_event_device *ced)
 
 static void sh_cmt_clock_event_start(struct sh_cmt_channel *ch, int periodic)
 {
-	struct clock_event_device *ced = &ch->ced;
-
 	sh_cmt_start(ch, FLAG_CLOCKEVENT);
 
-	/* TODO: calculate good shift from rate and counter bit width */
-
-	ced->shift = 32;
-	ced->mult = div_sc(ch->rate, NSEC_PER_SEC, ced->shift);
-	ced->max_delta_ns = clockevent_delta2ns(ch->max_match_value, ced);
-	ced->min_delta_ns = clockevent_delta2ns(0x1f, ced);
-
 	if (periodic)
-		sh_cmt_set_next(ch, ((ch->rate + HZ/2) / HZ) - 1);
+		sh_cmt_set_next(ch, ((ch->cmt->rate + HZ/2) / HZ) - 1);
 	else
 		sh_cmt_set_next(ch, ch->max_match_value);
 }
 
-static void sh_cmt_clock_event_mode(enum clock_event_mode mode,
-				    struct clock_event_device *ced)
+static int sh_cmt_clock_event_shutdown(struct clock_event_device *ced)
+{
+	struct sh_cmt_channel *ch = ced_to_sh_cmt(ced);
+
+	sh_cmt_stop(ch, FLAG_CLOCKEVENT);
+	return 0;
+}
+
+static int sh_cmt_clock_event_set_state(struct clock_event_device *ced,
+					int periodic)
 {
 	struct sh_cmt_channel *ch = ced_to_sh_cmt(ced);
 
 	/* deal with old setting first */
-	switch (ced->mode) {
-	case CLOCK_EVT_MODE_PERIODIC:
-	case CLOCK_EVT_MODE_ONESHOT:
+	if (clockevent_state_oneshot(ced) || clockevent_state_periodic(ced))
 		sh_cmt_stop(ch, FLAG_CLOCKEVENT);
-		break;
-	default:
-		break;
-	}
 
-	switch (mode) {
-	case CLOCK_EVT_MODE_PERIODIC:
-		dev_info(&ch->cmt->pdev->dev,
-			 "ch%u: used for periodic clock events\n", ch->index);
-		sh_cmt_clock_event_start(ch, 1);
-		break;
-	case CLOCK_EVT_MODE_ONESHOT:
-		dev_info(&ch->cmt->pdev->dev,
-			 "ch%u: used for oneshot clock events\n", ch->index);
-		sh_cmt_clock_event_start(ch, 0);
-		break;
-	case CLOCK_EVT_MODE_SHUTDOWN:
-	case CLOCK_EVT_MODE_UNUSED:
-		sh_cmt_stop(ch, FLAG_CLOCKEVENT);
-		break;
-	default:
-		break;
-	}
+	dev_info(&ch->cmt->pdev->dev, "ch%u: used for %s clock events\n",
+		 ch->index, periodic ? "periodic" : "oneshot");
+	sh_cmt_clock_event_start(ch, periodic);
+	return 0;
+}
+
+static int sh_cmt_clock_event_set_oneshot(struct clock_event_device *ced)
+{
+	return sh_cmt_clock_event_set_state(ced, 0);
+}
+
+static int sh_cmt_clock_event_set_periodic(struct clock_event_device *ced)
+{
+	return sh_cmt_clock_event_set_state(ced, 1);
 }
 
 static int sh_cmt_clock_event_next(unsigned long delta,
@@ -760,7 +751,7 @@ static int sh_cmt_clock_event_next(unsigned long delta,
 {
 	struct sh_cmt_channel *ch = ced_to_sh_cmt(ced);
 
-	BUG_ON(ced->mode != CLOCK_EVT_MODE_ONESHOT);
+	BUG_ON(!clockevent_state_oneshot(ced));
 	if (likely(ch->flags & FLAG_IRQCONTEXT))
 		ch->next_match_value = delta - 1;
 	else
@@ -814,9 +805,19 @@ static int sh_cmt_register_clockevent(struct sh_cmt_channel *ch,
 	ced->rating = 125;
 	ced->cpumask = cpu_possible_mask;
 	ced->set_next_event = sh_cmt_clock_event_next;
-	ced->set_mode = sh_cmt_clock_event_mode;
+	ced->set_state_shutdown = sh_cmt_clock_event_shutdown;
+	ced->set_state_periodic = sh_cmt_clock_event_set_periodic;
+	ced->set_state_oneshot = sh_cmt_clock_event_set_oneshot;
 	ced->suspend = sh_cmt_clock_event_suspend;
 	ced->resume = sh_cmt_clock_event_resume;
+
+	/* TODO: calculate good shift from rate and counter bit width */
+	ced->shift = 32;
+	ced->mult = div_sc(ch->cmt->rate, NSEC_PER_SEC, ced->shift);
+	ced->max_delta_ns = clockevent_delta2ns(ch->max_match_value, ced);
+	ced->max_delta_ticks = ch->max_match_value;
+	ced->min_delta_ns = clockevent_delta2ns(0x1f, ced);
+	ced->min_delta_ticks = 0x1f;
 
 	dev_info(&ch->cmt->pdev->dev, "ch%u: used for clock events\n",
 		 ch->index);
@@ -929,9 +930,6 @@ static int sh_cmt_map_memory(struct sh_cmt_device *cmt)
 static const struct platform_device_id sh_cmt_id_table[] = {
 	{ "sh-cmt-16", (kernel_ulong_t)&sh_cmt_info[SH_CMT_16BIT] },
 	{ "sh-cmt-32", (kernel_ulong_t)&sh_cmt_info[SH_CMT_32BIT] },
-	{ "sh-cmt-32-fast", (kernel_ulong_t)&sh_cmt_info[SH_CMT_32BIT_FAST] },
-	{ "sh-cmt-48", (kernel_ulong_t)&sh_cmt_info[SH_CMT_48BIT] },
-	{ "sh-cmt-48-gen2", (kernel_ulong_t)&sh_cmt_info[SH_CMT_48BIT_GEN2] },
 	{ }
 };
 MODULE_DEVICE_TABLE(platform, sh_cmt_id_table);
@@ -959,7 +957,6 @@ static int sh_cmt_setup(struct sh_cmt_device *cmt, struct platform_device *pdev)
 	unsigned int i;
 	int ret;
 
-	memset(cmt, 0, sizeof(*cmt));
 	cmt->pdev = pdev;
 	raw_spin_lock_init(&cmt->lock);
 
@@ -993,6 +990,18 @@ static int sh_cmt_setup(struct sh_cmt_device *cmt, struct platform_device *pdev)
 	ret = clk_prepare(cmt->clk);
 	if (ret < 0)
 		goto err_clk_put;
+
+	/* Determine clock rate. */
+	ret = clk_enable(cmt->clk);
+	if (ret < 0)
+		goto err_clk_unprepare;
+
+	if (cmt->info->width == 16)
+		cmt->rate = clk_get_rate(cmt->clk) / 512;
+	else
+		cmt->rate = clk_get_rate(cmt->clk) / 8;
+
+	clk_disable(cmt->clk);
 
 	/* Map the memory resource(s). */
 	ret = sh_cmt_map_memory(cmt);

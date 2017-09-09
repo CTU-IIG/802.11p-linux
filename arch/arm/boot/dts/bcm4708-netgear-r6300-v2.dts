@@ -10,6 +10,7 @@
 /dts-v1/;
 
 #include "bcm4708.dtsi"
+#include "bcm5301x-nand-cs0-bch8.dtsi"
 
 / {
 	compatible = "netgear,r6300v2", "brcm,bcm4708";
@@ -20,7 +21,8 @@
 	};
 
 	memory {
-		reg = <0x00000000 0x08000000>;
+		reg = <0x00000000 0x08000000
+		       0x88000000 0x08000000>;
 	};
 
 	leds {
@@ -61,7 +63,6 @@
 		compatible = "gpio-keys";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		poll-interval = <200>;
 
 		wps {
 			label = "WPS";
@@ -81,4 +82,8 @@
 			gpios = <&chipcommon 6 GPIO_ACTIVE_LOW>;
 		};
 	};
+};
+
+&spi_nor {
+	status = "okay";
 };

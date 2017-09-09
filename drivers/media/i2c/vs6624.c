@@ -11,10 +11,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/delay.h>
@@ -557,20 +553,27 @@ static int vs6624_s_ctrl(struct v4l2_ctrl *ctrl)
 	return 0;
 }
 
-static int vs6624_enum_mbus_fmt(struct v4l2_subdev *sd, unsigned index,
-				u32 *code)
+static int vs6624_enum_mbus_code(struct v4l2_subdev *sd,
+		struct v4l2_subdev_pad_config *cfg,
+		struct v4l2_subdev_mbus_code_enum *code)
 {
-	if (index >= ARRAY_SIZE(vs6624_formats))
+	if (code->pad || code->index >= ARRAY_SIZE(vs6624_formats))
 		return -EINVAL;
 
-	*code = vs6624_formats[index].mbus_code;
+	code->code = vs6624_formats[code->index].mbus_code;
 	return 0;
 }
 
-static int vs6624_try_mbus_fmt(struct v4l2_subdev *sd,
-				struct v4l2_mbus_framefmt *fmt)
+static int vs6624_set_fmt(struct v4l2_subdev *sd,
+		struct v4l2_subdev_pad_config *cfg,
+		struct v4l2_subdev_format *format)
 {
+	struct v4l2_mbus_framefmt *fmt = &format->format;
+	struct vs6624 *sensor = to_vs6624(sd);
 	int index;
+
+	if (format->pad)
+		return -EINVAL;
 
 	for (index = 0; index < ARRAY_SIZE(vs6624_formats); index++)
 		if (vs6624_formats[index].mbus_code == fmt->code)
@@ -590,18 +593,11 @@ static int vs6624_try_mbus_fmt(struct v4l2_subdev *sd,
 	fmt->height = fmt->height & (~3);
 	fmt->field = V4L2_FIELD_NONE;
 	fmt->colorspace = vs6624_formats[index].colorspace;
-	return 0;
-}
 
-static int vs6624_s_mbus_fmt(struct v4l2_subdev *sd,
-				struct v4l2_mbus_framefmt *fmt)
-{
-	struct vs6624 *sensor = to_vs6624(sd);
-	int ret;
-
-	ret = vs6624_try_mbus_fmt(sd, fmt);
-	if (ret)
-		return ret;
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
+		cfg->try_fmt = *fmt;
+		return 0;
+	}
 
 	/* set image format */
 	switch (fmt->code) {
@@ -648,12 +644,16 @@ static int vs6624_s_mbus_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int vs6624_g_mbus_fmt(struct v4l2_subdev *sd,
-				struct v4l2_mbus_framefmt *fmt)
+static int vs6624_get_fmt(struct v4l2_subdev *sd,
+		struct v4l2_subdev_pad_config *cfg,
+		struct v4l2_subdev_format *format)
 {
 	struct vs6624 *sensor = to_vs6624(sd);
 
-	*fmt = sensor->fmt;
+	if (format->pad)
+		return -EINVAL;
+
+	format->format = sensor->fmt;
 	return 0;
 }
 
@@ -738,18 +738,21 @@ static const struct v4l2_subdev_core_ops vs6624_core_ops = {
 };
 
 static const struct v4l2_subdev_video_ops vs6624_video_ops = {
-	.enum_mbus_fmt = vs6624_enum_mbus_fmt,
-	.try_mbus_fmt = vs6624_try_mbus_fmt,
-	.s_mbus_fmt = vs6624_s_mbus_fmt,
-	.g_mbus_fmt = vs6624_g_mbus_fmt,
 	.s_parm = vs6624_s_parm,
 	.g_parm = vs6624_g_parm,
 	.s_stream = vs6624_s_stream,
 };
 
+static const struct v4l2_subdev_pad_ops vs6624_pad_ops = {
+	.enum_mbus_code = vs6624_enum_mbus_code,
+	.get_fmt = vs6624_get_fmt,
+	.set_fmt = vs6624_set_fmt,
+};
+
 static const struct v4l2_subdev_ops vs6624_ops = {
 	.core = &vs6624_core_ops,
 	.video = &vs6624_video_ops,
+	.pad = &vs6624_pad_ops,
 };
 
 static int vs6624_probe(struct i2c_client *client,
@@ -856,7 +859,6 @@ MODULE_DEVICE_TABLE(i2c, vs6624_id);
 
 static struct i2c_driver vs6624_driver = {
 	.driver = {
-		.owner  = THIS_MODULE,
 		.name   = "vs6624",
 	},
 	.probe          = vs6624_probe,

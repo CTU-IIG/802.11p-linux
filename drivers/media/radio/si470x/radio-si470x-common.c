@@ -15,10 +15,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 
@@ -208,6 +204,7 @@ static int si470x_set_band(struct si470x_device *radio, int band)
 static int si470x_set_chan(struct si470x_device *radio, unsigned short chan)
 {
 	int retval;
+	unsigned long time_left;
 	bool timed_out = false;
 
 	/* start tuning */
@@ -219,9 +216,9 @@ static int si470x_set_chan(struct si470x_device *radio, unsigned short chan)
 
 	/* wait till tune operation has completed */
 	reinit_completion(&radio->completion);
-	retval = wait_for_completion_timeout(&radio->completion,
-			msecs_to_jiffies(tune_timeout));
-	if (!retval)
+	time_left = wait_for_completion_timeout(&radio->completion,
+						msecs_to_jiffies(tune_timeout));
+	if (time_left == 0)
 		timed_out = true;
 
 	if ((radio->registers[STATUSRSSI] & STATUSRSSI_STC) == 0)
@@ -301,6 +298,7 @@ static int si470x_set_seek(struct si470x_device *radio,
 	int band, retval;
 	unsigned int freq;
 	bool timed_out = false;
+	unsigned long time_left;
 
 	/* set band */
 	if (seek->rangelow || seek->rangehigh) {
@@ -342,9 +340,9 @@ static int si470x_set_seek(struct si470x_device *radio,
 
 	/* wait till tune operation has completed */
 	reinit_completion(&radio->completion);
-	retval = wait_for_completion_timeout(&radio->completion,
-			msecs_to_jiffies(seek_timeout));
-	if (!retval)
+	time_left = wait_for_completion_timeout(&radio->completion,
+						msecs_to_jiffies(seek_timeout));
+	if (time_left == 0)
 		timed_out = true;
 
 	if ((radio->registers[STATUSRSSI] & STATUSRSSI_STC) == 0)

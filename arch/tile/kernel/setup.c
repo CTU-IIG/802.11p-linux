@@ -32,6 +32,7 @@
 #include <linux/hugetlb.h>
 #include <linux/start_kernel.h>
 #include <linux/screen_info.h>
+#include <linux/tick.h>
 #include <asm/setup.h>
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
@@ -48,7 +49,7 @@
 static inline int ABS(int x) { return x >= 0 ? x : -x; }
 
 /* Chip information */
-char chip_model[64] __write_once;
+char chip_model[64] __ro_after_init;
 
 #ifdef CONFIG_VT
 struct screen_info screen_info;
@@ -70,7 +71,7 @@ static unsigned long __initdata node_percpu[MAX_NUMNODES];
  * per-CPU stack and boot info.
  */
 DEFINE_PER_CPU(unsigned long, boot_sp) =
-	(unsigned long)init_stack + THREAD_SIZE;
+	(unsigned long)init_stack + THREAD_SIZE - STACK_TOP_DELTA;
 
 #ifdef CONFIG_SMP
 DEFINE_PER_CPU(unsigned long, boot_pc) = (unsigned long)start_kernel;
@@ -96,17 +97,17 @@ int node_controller[MAX_NUMNODES] = { [0 ... MAX_NUMNODES-1] = -1 };
 #ifdef CONFIG_HIGHMEM
 /* Map information from VAs to PAs */
 unsigned long pbase_map[1 << (32 - HPAGE_SHIFT)]
-  __write_once __attribute__((aligned(L2_CACHE_BYTES)));
+  __ro_after_init __attribute__((aligned(L2_CACHE_BYTES)));
 EXPORT_SYMBOL(pbase_map);
 
 /* Map information from PAs to VAs */
 void *vbase_map[NR_PA_HIGHBIT_VALUES]
-  __write_once __attribute__((aligned(L2_CACHE_BYTES)));
+  __ro_after_init __attribute__((aligned(L2_CACHE_BYTES)));
 EXPORT_SYMBOL(vbase_map);
 #endif
 
 /* Node number as a function of the high PA bits */
-int highbits_to_node[NR_PA_HIGHBIT_VALUES] __write_once;
+int highbits_to_node[NR_PA_HIGHBIT_VALUES] __ro_after_init;
 EXPORT_SYMBOL(highbits_to_node);
 
 static unsigned int __initdata maxmem_pfn = -1U;
@@ -215,12 +216,11 @@ early_param("mem", setup_mem);  /* compatibility with x86 */
 
 static int __init setup_isolnodes(char *str)
 {
-	char buf[MAX_NUMNODES * 5];
 	if (str == NULL || nodelist_parse(str, isolnodes) != 0)
 		return -EINVAL;
 
-	nodelist_scnprintf(buf, sizeof(buf), isolnodes);
-	pr_info("Set isolnodes value to '%s'\n", buf);
+	pr_info("Set isolnodes value to '%*pbl'\n",
+		nodemask_pr_args(&isolnodes));
 	return 0;
 }
 early_param("isolnodes", setup_isolnodes);
@@ -774,7 +774,7 @@ static void __init zone_sizes_init(void)
 		 * though, there'll be no lowmem, so we just alloc_bootmem
 		 * the memmap.  There will be no percpu memory either.
 		 */
-		if (i != 0 && cpu_isset(i, isolnodes)) {
+		if (i != 0 && node_isset(i, isolnodes)) {
 			node_memmap_pfn[i] =
 				alloc_bootmem_pfn(0, memmap_size, 0);
 			BUG_ON(node_percpu[i] != 0);
@@ -844,11 +844,11 @@ static void __init zone_sizes_init(void)
 #ifdef CONFIG_NUMA
 
 /* which logical CPUs are on which nodes */
-struct cpumask node_2_cpu_mask[MAX_NUMNODES] __write_once;
+struct cpumask node_2_cpu_mask[MAX_NUMNODES] __ro_after_init;
 EXPORT_SYMBOL(node_2_cpu_mask);
 
 /* which node each logical CPU is on */
-char cpu_2_node[NR_CPUS] __write_once __attribute__((aligned(L2_CACHE_BYTES)));
+char cpu_2_node[NR_CPUS] __ro_after_init __attribute__((aligned(L2_CACHE_BYTES)));
 EXPORT_SYMBOL(cpu_2_node);
 
 /* Return cpu_to_node() except for cpus not yet assigned, which return -1 */
@@ -882,7 +882,7 @@ static int __init node_neighbors(int node, int cpu,
 
 static void __init setup_numa_mapping(void)
 {
-	int distance[MAX_NUMNODES][NR_CPUS];
+	u8 distance[MAX_NUMNODES][NR_CPUS];
 	HV_Coord coord;
 	int cpu, node, cpus, i, x, y;
 	int num_nodes = num_online_nodes();
@@ -962,9 +962,7 @@ static void __init setup_numa_mapping(void)
 		cpumask_set_cpu(best_cpu, &node_2_cpu_mask[node]);
 		cpu_2_node[best_cpu] = node;
 		cpumask_clear_cpu(best_cpu, &unbound_cpus);
-		node = next_node(node, default_nodes);
-		if (node == MAX_NUMNODES)
-			node = first_node(default_nodes);
+		node = next_node_in(node, default_nodes);
 	}
 
 	/* Print out node assignments and set defaults for disabled cpus */
@@ -1139,7 +1137,7 @@ static void __init load_hv_initrd(void)
 
 void __init free_initrd_mem(unsigned long begin, unsigned long end)
 {
-	free_bootmem(__pa(begin), end - begin);
+	free_bootmem_late(__pa(begin), end - begin);
 }
 
 static int __init setup_initrd(char *str)
@@ -1271,7 +1269,7 @@ static void __init validate_va(void)
  * cpus plus any other cpus that are willing to share their cache.
  * It is set by hv_inquire_tiles(HV_INQ_TILES_LOTAR).
  */
-struct cpumask __write_once cpu_lotar_map;
+struct cpumask __ro_after_init cpu_lotar_map;
 EXPORT_SYMBOL(cpu_lotar_map);
 
 /*
@@ -1293,7 +1291,7 @@ EXPORT_SYMBOL(hash_for_home_map);
  * cache, those tiles will only appear in cpu_lotar_map, NOT in
  * cpu_cacheable_map, as they are a special case.
  */
-struct cpumask __write_once cpu_cacheable_map;
+struct cpumask __ro_after_init cpu_cacheable_map;
 EXPORT_SYMBOL(cpu_cacheable_map);
 
 static __initdata struct cpumask disabled_map;
@@ -1315,11 +1313,9 @@ early_param("disabled_cpus", disabled_cpus);
 
 void __init print_disabled_cpus(void)
 {
-	if (!cpumask_empty(&disabled_map)) {
-		char buf[100];
-		cpulist_scnprintf(buf, sizeof(buf), &disabled_map);
-		pr_info("CPUs not available for Linux: %s\n", buf);
-	}
+	if (!cpumask_empty(&disabled_map))
+		pr_info("CPUs not available for Linux: %*pbl\n",
+			cpumask_pr_args(&disabled_map));
 }
 
 static void __init setup_cpu_maps(void)
@@ -1392,6 +1388,28 @@ static int __init dataplane(char *str)
 }
 
 early_param("dataplane", dataplane);
+
+#ifdef CONFIG_NO_HZ_FULL
+/* Warn if hypervisor shared cpus are marked as nohz_full. */
+static int __init check_nohz_full_cpus(void)
+{
+	struct cpumask shared;
+	int cpu;
+
+	if (hv_inquire_tiles(HV_INQ_TILES_SHARED,
+			     (HV_VirtAddr) shared.bits, sizeof(shared)) < 0) {
+		pr_warn("WARNING: No support for inquiring hv shared tiles\n");
+		return 0;
+	}
+	for_each_cpu(cpu, &shared) {
+		if (tick_nohz_full_cpu(cpu))
+			pr_warn("WARNING: nohz_full cpu %d receives hypervisor interrupts!\n",
+			       cpu);
+	}
+	return 0;
+}
+arch_initcall(check_nohz_full_cpus);
+#endif
 
 #ifdef CONFIG_CMDLINE_BOOL
 static char __initdata builtin_cmdline[COMMAND_LINE_SIZE] = CONFIG_CMDLINE;
@@ -1488,7 +1506,7 @@ void __init setup_arch(char **cmdline_p)
  * Set up per-cpu memory.
  */
 
-unsigned long __per_cpu_offset[NR_CPUS] __write_once;
+unsigned long __per_cpu_offset[NR_CPUS] __ro_after_init;
 EXPORT_SYMBOL(__per_cpu_offset);
 
 static size_t __initdata pfn_offset[MAX_NUMNODES] = { 0 };
@@ -1612,14 +1630,14 @@ static struct resource data_resource = {
 	.name	= "Kernel data",
 	.start	= 0,
 	.end	= 0,
-	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+	.flags	= IORESOURCE_BUSY | IORESOURCE_SYSTEM_RAM
 };
 
 static struct resource code_resource = {
 	.name	= "Kernel code",
 	.start	= 0,
 	.end	= 0,
-	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+	.flags	= IORESOURCE_BUSY | IORESOURCE_SYSTEM_RAM
 };
 
 /*
@@ -1653,10 +1671,15 @@ insert_ram_resource(u64 start_pfn, u64 end_pfn, bool reserved)
 		kzalloc(sizeof(struct resource), GFP_ATOMIC);
 	if (!res)
 		return NULL;
-	res->name = reserved ? "Reserved" : "System RAM";
 	res->start = start_pfn << PAGE_SHIFT;
 	res->end = (end_pfn << PAGE_SHIFT) - 1;
 	res->flags = IORESOURCE_BUSY | IORESOURCE_MEM;
+	if (reserved) {
+		res->name = "Reserved";
+	} else {
+		res->name = "System RAM";
+		res->flags |= IORESOURCE_SYSRAM;
+	}
 	if (insert_resource(&iomem_resource, res)) {
 		kfree(res);
 		return NULL;

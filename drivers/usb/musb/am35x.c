@@ -121,7 +121,6 @@ static void am35x_musb_disable(struct musb *musb)
 	musb_writel(reg_base, CORE_INTR_MASK_CLEAR_REG, AM35X_INTR_USB_MASK);
 	musb_writel(reg_base, EP_INTR_MASK_CLEAR_REG,
 			 AM35X_TX_INTR_MASK | AM35X_RX_INTR_MASK);
-	musb_writeb(musb->mregs, MUSB_DEVCTL, 0);
 	musb_writel(reg_base, USB_END_OF_INTR_REG, 0);
 }
 
@@ -438,11 +437,15 @@ static void am35x_read_fifo(struct musb_hw_ep *hw_ep, u16 len, u8 *dst)
 }
 
 static const struct musb_platform_ops am35x_ops = {
-	.quirks		= MUSB_INDEXED_EP,
+	.quirks		= MUSB_DMA_INVENTRA | MUSB_INDEXED_EP,
 	.init		= am35x_musb_init,
 	.exit		= am35x_musb_exit,
 
 	.read_fifo	= am35x_read_fifo,
+#ifdef CONFIG_USB_INVENTRA_DMA
+	.dma_init	= musbhs_dma_controller_create,
+	.dma_exit	= musbhs_dma_controller_destroy,
+#endif
 	.enable		= am35x_musb_enable,
 	.disable	= am35x_musb_disable,
 
@@ -470,10 +473,8 @@ static int am35x_probe(struct platform_device *pdev)
 	int				ret = -ENOMEM;
 
 	glue = kzalloc(sizeof(*glue), GFP_KERNEL);
-	if (!glue) {
-		dev_err(&pdev->dev, "failed to allocate glue context\n");
+	if (!glue)
 		goto err0;
-	}
 
 	phy_clk = clk_get(&pdev->dev, "fck");
 	if (IS_ERR(phy_clk)) {
@@ -508,8 +509,10 @@ static int am35x_probe(struct platform_device *pdev)
 	pdata->platform_ops		= &am35x_ops;
 
 	glue->phy = usb_phy_generic_register();
-	if (IS_ERR(glue->phy))
+	if (IS_ERR(glue->phy)) {
+		ret = PTR_ERR(glue->phy);
 		goto err7;
+	}
 	platform_set_drvdata(pdev, glue);
 
 	pinfo = am35x_dev_info;
@@ -565,7 +568,7 @@ static int am35x_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int am35x_suspend(struct device *dev)
 {
 	struct am35x_glue	*glue = dev_get_drvdata(dev);

@@ -31,7 +31,7 @@
 #include <linux/console.h>
 #include <linux/io.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/div64.h>
 
 #ifdef CONFIG_PM
@@ -1606,7 +1606,7 @@ static int sm501fb_start(struct sm501fb_info *info,
 	info->fbmem_len = resource_size(res);
 
 	/* clear framebuffer memory - avoids garbage data on unused fb */
-	memset(info->fbmem, 0, info->fbmem_len);
+	memset_io(info->fbmem, 0, info->fbmem_len);
 
 	/* clear palette ram - undefined at power on */
 	for (k = 0; k < (256 * 3); k++)

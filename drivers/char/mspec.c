@@ -93,13 +93,10 @@ struct vma_data {
 	spinlock_t lock;	/* Serialize access to this structure. */
 	int count;		/* Number of pages allocated. */
 	enum mspec_page_type type; /* Type of pages allocated. */
-	int flags;		/* See VMD_xxx below. */
 	unsigned long vm_start;	/* Original (unsplit) base. */
 	unsigned long vm_end;	/* Original (unsplit) end. */
 	unsigned long maddr[0];	/* Array of MSPEC addresses. */
 };
-
-#define VMD_VMALLOCED 0x1	/* vmalloc'd rather than kmalloc'd */
 
 /* used on shub2 to clear FOP cache in the HUB */
 static unsigned long scratch_page[MAX_NUMNODES];
@@ -185,10 +182,7 @@ mspec_close(struct vm_area_struct *vma)
 			       "failed to zero page %ld\n", my_page);
 	}
 
-	if (vdata->flags & VMD_VMALLOCED)
-		vfree(vdata);
-	else
-		kfree(vdata);
+	kvfree(vdata);
 }
 
 /*
@@ -197,12 +191,12 @@ mspec_close(struct vm_area_struct *vma)
  * Creates a mspec page and maps it to user space.
  */
 static int
-mspec_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+mspec_fault(struct vm_fault *vmf)
 {
 	unsigned long paddr, maddr;
 	unsigned long pfn;
 	pgoff_t index = vmf->pgoff;
-	struct vma_data *vdata = vma->vm_private_data;
+	struct vma_data *vdata = vmf->vma->vm_private_data;
 
 	maddr = (volatile unsigned long) vdata->maddr[index];
 	if (maddr == 0) {
@@ -233,7 +227,7 @@ mspec_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	 * be because another thread has installed the pte first, so it
 	 * is no problem.
 	 */
-	vm_insert_pfn(vma, (unsigned long)vmf->virtual_address, pfn);
+	vm_insert_pfn(vmf->vma, vmf->address, pfn);
 
 	return VM_FAULT_NOPAGE;
 }
@@ -256,7 +250,7 @@ mspec_mmap(struct file *file, struct vm_area_struct *vma,
 					enum mspec_page_type type)
 {
 	struct vma_data *vdata;
-	int pages, vdata_size, flags = 0;
+	int pages, vdata_size;
 
 	if (vma->vm_pgoff != 0)
 		return -EINVAL;
@@ -271,16 +265,13 @@ mspec_mmap(struct file *file, struct vm_area_struct *vma,
 	vdata_size = sizeof(struct vma_data) + pages * sizeof(long);
 	if (vdata_size <= PAGE_SIZE)
 		vdata = kzalloc(vdata_size, GFP_KERNEL);
-	else {
+	else
 		vdata = vzalloc(vdata_size);
-		flags = VMD_VMALLOCED;
-	}
 	if (!vdata)
 		return -ENOMEM;
 
 	vdata->vm_start = vma->vm_start;
 	vdata->vm_end = vma->vm_end;
-	vdata->flags = flags;
 	vdata->type = type;
 	spin_lock_init(&vdata->lock);
 	atomic_set(&vdata->refcnt, 1);

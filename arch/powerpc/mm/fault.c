@@ -17,6 +17,7 @@
 
 #include <linux/signal.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/string.h>
@@ -26,20 +27,20 @@
 #include <linux/mm.h>
 #include <linux/interrupt.h>
 #include <linux/highmem.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/kprobes.h>
 #include <linux/kdebug.h>
 #include <linux/perf_event.h>
 #include <linux/ratelimit.h>
 #include <linux/context_tracking.h>
 #include <linux/hugetlb.h>
+#include <linux/uaccess.h>
 
 #include <asm/firmware.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/mmu.h>
 #include <asm/mmu_context.h>
-#include <asm/uaccess.h>
 #include <asm/tlbflush.h>
 #include <asm/siginfo.h>
 #include <asm/debug.h>
@@ -205,7 +206,7 @@ static int mm_fault_error(struct pt_regs *regs, unsigned long addr, int fault)
  * The return value is 0 if the fault was handled, or the signal
  * number if this is a kernel fault that can't be handled here.
  */
-int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
+int do_page_fault(struct pt_regs *regs, unsigned long address,
 			    unsigned long error_code)
 {
 	enum ctx_state prev_state = exception_enter();
@@ -253,8 +254,11 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	if (unlikely(debugger_fault_handler(regs)))
 		goto bail;
 
-	/* On a kernel SLB miss we can only check for a valid exception entry */
-	if (!user_mode(regs) && (address >= TASK_SIZE)) {
+	/*
+	 * The kernel should never take an execute fault nor should it
+	 * take a page fault to a kernel address.
+	 */
+	if (!user_mode(regs) && (is_exec || (address >= TASK_SIZE))) {
 		rc = SIGSEGV;
 		goto bail;
 	}
@@ -272,15 +276,16 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	if (!arch_irq_disabled_regs(regs))
 		local_irq_enable();
 
-	if (in_atomic() || mm == NULL) {
+	if (faulthandler_disabled() || mm == NULL) {
 		if (!user_mode(regs)) {
 			rc = SIGSEGV;
 			goto bail;
 		}
-		/* in_atomic() in user mode is really bad,
+		/* faulthandler_disabled() in user mode is really bad,
 		   as is current->mm == NULL. */
 		printk(KERN_EMERG "Page fault in user mode with "
-		       "in_atomic() = %d mm = %p\n", in_atomic(), mm);
+		       "faulthandler_disabled() = %d mm = %p\n",
+		       faulthandler_disabled(), mm);
 		printk(KERN_EMERG "NIP = %lx  MSR = %lx\n",
 		       regs->nip, regs->msr);
 		die("Weird page fault", regs, SIGSEGV);
@@ -389,19 +394,6 @@ good_area:
 #endif /* CONFIG_8xx */
 
 	if (is_exec) {
-#ifdef CONFIG_PPC_STD_MMU
-		/* Protection fault on exec go straight to failure on
-		 * Hash based MMUs as they either don't support per-page
-		 * execute permission, or if they do, it's handled already
-		 * at the hash level. This test would probably have to
-		 * be removed if we change the way this works to make hash
-		 * processors use the same I/D cache coherency mechanism
-		 * as embedded.
-		 */
-		if (error_code & DSISR_PROTFAULT)
-			goto bad_area;
-#endif /* CONFIG_PPC_STD_MMU */
-
 		/*
 		 * Allow execution from readable areas if the MMU does not
 		 * provide separate controls over reading and executing.
@@ -423,20 +415,52 @@ good_area:
 		flags |= FAULT_FLAG_WRITE;
 	/* a read */
 	} else {
-		/* protection fault */
-		if (error_code & 0x08000000)
-			goto bad_area;
 		if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)))
 			goto bad_area;
 	}
+#ifdef CONFIG_PPC_STD_MMU
+	/*
+	 * For hash translation mode, we should never get a
+	 * PROTFAULT. Any update to pte to reduce access will result in us
+	 * removing the hash page table entry, thus resulting in a DSISR_NOHPTE
+	 * fault instead of DSISR_PROTFAULT.
+	 *
+	 * A pte update to relax the access will not result in a hash page table
+	 * entry invalidate and hence can result in DSISR_PROTFAULT.
+	 * ptep_set_access_flags() doesn't do a hpte flush. This is why we have
+	 * the special !is_write in the below conditional.
+	 *
+	 * For platforms that doesn't supports coherent icache and do support
+	 * per page noexec bit, we do setup things such that we do the
+	 * sync between D/I cache via fault. But that is handled via low level
+	 * hash fault code (hash_page_do_lazy_icache()) and we should not reach
+	 * here in such case.
+	 *
+	 * For wrong access that can result in PROTFAULT, the above vma->vm_flags
+	 * check should handle those and hence we should fall to the bad_area
+	 * handling correctly.
+	 *
+	 * For embedded with per page exec support that doesn't support coherent
+	 * icache we do get PROTFAULT and we handle that D/I cache sync in
+	 * set_pte_at while taking the noexec/prot fault. Hence this is WARN_ON
+	 * is conditional for server MMU.
+	 *
+	 * For radix, we can get prot fault for autonuma case, because radix
+	 * page table will have them marked noaccess for user.
+	 */
+	if (!radix_enabled() && !is_write)
+		WARN_ON_ONCE(error_code & DSISR_PROTFAULT);
+#endif /* CONFIG_PPC_STD_MMU */
 
 	/*
 	 * If for any reason at all we couldn't handle the fault,
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(mm, vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags);
 	if (unlikely(fault & (VM_FAULT_RETRY|VM_FAULT_ERROR))) {
+		if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		rc = mm_fault_error(regs, address, fault);
 		if (rc >= MM_FAULT_RETURN)
 			goto bail;
@@ -502,8 +526,8 @@ bad_area_nosemaphore:
 bail:
 	exception_exit(prev_state);
 	return rc;
-
 }
+NOKPROBE_SYMBOL(do_page_fault);
 
 /*
  * bad_page_fault is called when we have a bad access from the kernel.
@@ -516,7 +540,7 @@ void bad_page_fault(struct pt_regs *regs, unsigned long address, int sig)
 
 	/* Are we prepared to handle this fault?  */
 	if ((entry = search_exception_tables(regs->nip)) != NULL) {
-		regs->nip = entry->fixup;
+		regs->nip = extable_fixup(entry);
 		return;
 	}
 
@@ -532,6 +556,10 @@ void bad_page_fault(struct pt_regs *regs, unsigned long address, int sig)
 	case 0x480:
 		printk(KERN_ALERT "Unable to handle kernel paging request for "
 			"instruction fetch\n");
+		break;
+	case 0x600:
+		printk(KERN_ALERT "Unable to handle kernel paging request for "
+			"unaligned access at address 0x%08lx\n", regs->dar);
 		break;
 	default:
 		printk(KERN_ALERT "Unable to handle kernel paging request for "

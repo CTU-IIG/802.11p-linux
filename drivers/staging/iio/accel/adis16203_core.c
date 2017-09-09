@@ -1,7 +1,7 @@
 /*
- * ADIS16203 Programmable Digital Vibration Sensor driver
+ * ADIS16203 Programmable 360 Degrees Inclinometer
  *
- * Copyright 2030 Analog Devices Inc.
+ * Copyright 2010 Analog Devices Inc.
  *
  * Licensed under the GPL-2 or later.
  */
@@ -104,10 +104,10 @@ static const struct iio_chan_spec adis16203_channels[] = {
 	ADIS_SUPPLY_CHAN(ADIS16203_SUPPLY_OUT, ADIS16203_SCAN_SUPPLY, 0, 12),
 	ADIS_AUX_ADC_CHAN(ADIS16203_AUX_ADC, ADIS16203_SCAN_AUX_ADC, 0, 12),
 	ADIS_INCLI_CHAN(X, ADIS16203_XINCL_OUT, ADIS16203_SCAN_INCLI_X,
-		BIT(IIO_CHAN_INFO_CALIBBIAS), 0, 14),
+			BIT(IIO_CHAN_INFO_CALIBBIAS), 0, 14),
 	/* Fixme: Not what it appears to be - see data sheet */
 	ADIS_INCLI_CHAN(Y, ADIS16203_YINCL_OUT, ADIS16203_SCAN_INCLI_Y,
-		0, 0, 14),
+			0, 0, 14),
 	ADIS_TEMP_CHAN(ADIS16203_TEMP_OUT, ADIS16203_SCAN_TEMP, 0, 12),
 	IIO_CHAN_SOFT_TIMESTAMP(5),
 };
@@ -134,6 +134,7 @@ static const struct adis_data adis16203_data = {
 	.diag_stat_reg = ADIS16203_DIAG_STAT,
 
 	.self_test_mask = ADIS16203_MSC_CTRL_SELF_TEST_EN,
+	.self_test_no_autoclear = true,
 	.startup_delay = ADIS16203_STARTUP_DELAY,
 
 	.status_error_msgs = adis16203_status_error_msgs,
@@ -203,7 +204,6 @@ static int adis16203_remove(struct spi_device *spi)
 static struct spi_driver adis16203_driver = {
 	.driver = {
 		.name = "adis16203",
-		.owner = THIS_MODULE,
 	},
 	.probe = adis16203_probe,
 	.remove = adis16203_remove,
@@ -211,6 +211,6 @@ static struct spi_driver adis16203_driver = {
 module_spi_driver(adis16203_driver);
 
 MODULE_AUTHOR("Barry Song <21cnbao@gmail.com>");
-MODULE_DESCRIPTION("Analog Devices ADIS16203 Programmable Digital Vibration Sensor driver");
+MODULE_DESCRIPTION("Analog Devices ADIS16203 Programmable 360 Degrees Inclinometer");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("spi:adis16203");

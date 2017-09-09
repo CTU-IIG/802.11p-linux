@@ -237,7 +237,7 @@ static void esas2r_claim_interrupts(struct esas2r_adapter *a)
 		flags |= IRQF_SHARED;
 
 	esas2r_log(ESAS2R_LOG_INFO,
-		   "esas2r_claim_interrupts irq=%d (%p, %s, %x)",
+		   "esas2r_claim_interrupts irq=%d (%p, %s, %lx)",
 		   a->pcid->irq, a, a->name, flags);
 
 	if (request_irq(a->pcid->irq,
@@ -813,12 +813,13 @@ static void esas2r_init_pci_cfg_space(struct esas2r_adapter *a)
 		pci_read_config_word(a->pcid, pcie_cap_reg + PCI_EXP_DEVCTL,
 				     &devcontrol);
 
-		if ((devcontrol & PCI_EXP_DEVCTL_READRQ) > 0x2000) {
+		if ((devcontrol & PCI_EXP_DEVCTL_READRQ) >
+		     PCI_EXP_DEVCTL_READRQ_512B) {
 			esas2r_log(ESAS2R_LOG_INFO,
 				   "max read request size > 512B");
 
 			devcontrol &= ~PCI_EXP_DEVCTL_READRQ;
-			devcontrol |= 0x2000;
+			devcontrol |= PCI_EXP_DEVCTL_READRQ_512B;
 			pci_write_config_word(a->pcid,
 					      pcie_cap_reg + PCI_EXP_DEVCTL,
 					      devcontrol);
@@ -962,10 +963,6 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 
 	/* initialize the allocated memory */
 	if (test_bit(AF_FIRST_INIT, &a->flags)) {
-		memset(a->req_table, 0,
-		       (num_requests + num_ae_requests +
-			1) * sizeof(struct esas2r_request *));
-
 		esas2r_targ_db_initialize(a);
 
 		/* prime parts of the inbound list */

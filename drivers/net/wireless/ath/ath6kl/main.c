@@ -105,7 +105,7 @@ static void ath6kl_sta_cleanup(struct ath6kl *ar, u8 i)
 
 	memset(&ar->ap_stats.sta[sta->aid - 1], 0,
 	       sizeof(struct wmi_per_sta_stat));
-	memset(sta->mac, 0, ETH_ALEN);
+	eth_zero_addr(sta->mac);
 	memset(sta->wpa_ie, 0, ATH6KL_MAX_IE);
 	sta->aid = 0;
 	sta->sta_flags = 0;
@@ -488,7 +488,6 @@ void ath6kl_connect_ap_mode_sta(struct ath6kl_vif *vif, u16 aid, u8 *mac_addr,
 
 	sinfo.assoc_req_ies = ies;
 	sinfo.assoc_req_ies_len = ies_len;
-	sinfo.filled |= STATION_INFO_ASSOC_REQ_IES;
 
 	cfg80211_new_sta(vif->ndev, mac_addr, &sinfo, GFP_KERNEL);
 
@@ -1114,13 +1113,6 @@ static int ath6kl_close(struct net_device *dev)
 	return 0;
 }
 
-static struct net_device_stats *ath6kl_get_stats(struct net_device *dev)
-{
-	struct ath6kl_vif *vif = netdev_priv(dev);
-
-	return &vif->net_stats;
-}
-
 static int ath6kl_set_features(struct net_device *dev,
 			       netdev_features_t features)
 {
@@ -1286,7 +1278,6 @@ static const struct net_device_ops ath6kl_netdev_ops = {
 	.ndo_open               = ath6kl_open,
 	.ndo_stop               = ath6kl_close,
 	.ndo_start_xmit         = ath6kl_data_tx,
-	.ndo_get_stats          = ath6kl_get_stats,
 	.ndo_set_features       = ath6kl_set_features,
 	.ndo_set_rx_mode	= ath6kl_set_multicast_list,
 };

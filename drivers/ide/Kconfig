@@ -10,6 +10,7 @@ menuconfig IDE
 	tristate "ATA/ATAPI/MFM/RLL support (DEPRECATED)"
 	depends on HAVE_IDE
 	depends on BLOCK
+	select BLK_SCSI_REQUEST
 	---help---
 	  If you say Y here, your kernel will be able to manage ATA/(E)IDE and
 	  ATAPI units. The most common cases are IDE hard drives and ATAPI
@@ -642,15 +643,6 @@ config BLK_DEV_TC86C001
 	select BLK_DEV_IDEDMA_PCI
 	help
 	This driver adds support for Toshiba TC86C001 GOKU-S chip.
-
-config BLK_DEV_CELLEB
-	tristate "Toshiba's Cell Reference Set IDE support"
-	depends on PPC_CELLEB
-	select BLK_DEV_IDEDMA_PCI
-	help
-	  This driver provides support for the on-board IDE controller on
-	  Toshiba Cell Reference Board.
-	  If unsure, say Y.
 
 endif
 

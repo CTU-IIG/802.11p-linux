@@ -88,10 +88,8 @@ static debug_info_t *lcs_dbf_trace;
 static void
 lcs_unregister_debug_facility(void)
 {
-	if (lcs_dbf_setup)
-		debug_unregister(lcs_dbf_setup);
-	if (lcs_dbf_trace)
-		debug_unregister(lcs_dbf_trace);
+	debug_unregister(lcs_dbf_setup);
+	debug_unregister(lcs_dbf_trace);
 }
 
 static int
@@ -1763,8 +1761,8 @@ lcs_get_control(struct lcs_card *card, struct lcs_cmd *cmd)
 			lcs_schedule_recovery(card);
 			break;
 		case LCS_CMD_STOPLAN:
-			pr_warning("Stoplan for %s initiated by LGW.\n",
-				   card->dev->name);
+			pr_warn("Stoplan for %s initiated by LGW\n",
+				card->dev->name);
 			if (card->dev)
 				netif_carrier_off(card->dev);
 			break;
@@ -1890,7 +1888,7 @@ lcs_stop_device(struct net_device *dev)
 	rc = lcs_stopcard(card);
 	if (rc)
 		dev_err(&card->dev->dev,
-			" Shutting down the LCS device failed\n ");
+			" Shutting down the LCS device failed\n");
 	return rc;
 }
 
@@ -2152,7 +2150,7 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 	rc = lcs_detect(card);
 	if (rc) {
 		LCS_DBF_TEXT(2, setup, "dtctfail");
-		dev_err(&card->dev->dev,
+		dev_err(&ccwgdev->dev,
 			"Detecting a network adapter for LCS devices"
 			" failed with rc=%d (0x%x)\n", rc, rc);
 		lcs_stopcard(card);

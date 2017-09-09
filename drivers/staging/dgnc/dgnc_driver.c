@@ -11,24 +11,7 @@
  * but WITHOUT ANY WARRANTY, EXPRESS OR IMPLIED; without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
  * PURPOSE.  See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- *
- *	NOTE TO LINUX KERNEL HACKERS:  DO NOT REFORMAT THIS CODE!
- *
- *	This is shared code between Digi's CVS archive and the
- *	Linux Kernel sources.
- *	Changing the source just for reformatting needlessly breaks
- *	our CVS diff history.
- *
- *	Send any bug fixes/changes to:  Eng.Linux at digi dot com.
- *	Thank you.
- *
  */
-
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -37,72 +20,50 @@
 #include <linux/sched.h>
 #include "dgnc_driver.h"
 #include "dgnc_pci.h"
-#include "dpacompat.h"
 #include "dgnc_mgmt.h"
 #include "dgnc_tty.h"
 #include "dgnc_cls.h"
 #include "dgnc_neo.h"
-#include "dgnc_sysfs.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Digi International, http://www.digi.com");
 MODULE_DESCRIPTION("Driver for the Digi International Neo and Classic PCI based product line");
 MODULE_SUPPORTED_DEVICE("dgnc");
 
-/**************************************************************************
- *
- * protos for this file
- *
- */
-static int		dgnc_start(void);
-static int		dgnc_finalize_board_init(struct dgnc_board *brd);
-static void		dgnc_init_globals(void);
-static int		dgnc_found_board(struct pci_dev *pdev, int id);
-static void		dgnc_cleanup_board(struct dgnc_board *brd);
-static void		dgnc_poll_handler(ulong dummy);
-static int		dgnc_init_one(struct pci_dev *pdev, const struct pci_device_id *ent);
-static void		dgnc_do_remap(struct dgnc_board *brd);
+/* File operations permitted on Control/Management major. */
 
-/*
- * File operations permitted on Control/Management major.
- */
-static const struct file_operations dgnc_BoardFops = {
+static const struct file_operations dgnc_board_fops = {
 	.owner		=	THIS_MODULE,
 	.unlocked_ioctl =	dgnc_mgmt_ioctl,
 	.open		=	dgnc_mgmt_open,
 	.release	=	dgnc_mgmt_close
 };
 
+/* Globals */
 
-/*
- * Globals
- */
-uint			dgnc_NumBoards;
-struct dgnc_board		*dgnc_Board[MAXBOARDS];
+uint			dgnc_num_boards;
+struct dgnc_board		*dgnc_board[MAXBOARDS];
 DEFINE_SPINLOCK(dgnc_global_lock);
-uint			dgnc_Major;
+DEFINE_SPINLOCK(dgnc_poll_lock); /* Poll scheduling lock */
+uint			dgnc_major;
 int			dgnc_poll_tick = 20;	/* Poll interval - 20 ms */
 
-/*
- * Static vars.
- */
+/* Static vars. */
+
 static struct class *dgnc_class;
 
-/*
- * Poller stuff
- */
-static DEFINE_SPINLOCK(dgnc_poll_lock); /* Poll scheduling lock */
-static ulong		dgnc_poll_time;				/* Time of next poll */
-static uint		dgnc_poll_stop;				/* Used to tell poller to stop */
+/* Poller stuff */
+
+static ulong		dgnc_poll_time; /* Time of next poll */
+static uint		dgnc_poll_stop; /* Used to tell poller to stop */
 static struct timer_list dgnc_poll_timer;
 
-
-static struct pci_device_id dgnc_pci_tbl[] = {
-	{	DIGI_VID, PCI_DEVICE_CLASSIC_4_DID, PCI_ANY_ID, PCI_ANY_ID, 0, 0,	0 },
-	{	DIGI_VID, PCI_DEVICE_CLASSIC_4_422_DID, PCI_ANY_ID, PCI_ANY_ID, 0, 0,	1 },
-	{	DIGI_VID, PCI_DEVICE_CLASSIC_8_DID, PCI_ANY_ID, PCI_ANY_ID, 0, 0,	2 },
-	{	DIGI_VID, PCI_DEVICE_CLASSIC_8_422_DID, PCI_ANY_ID, PCI_ANY_ID, 0, 0,	3 },
-	{0,}						/* 0 terminated list. */
+static const struct pci_device_id dgnc_pci_tbl[] = {
+	{PCI_DEVICE(DIGI_VID, PCI_DEVICE_CLASSIC_4_DID),     .driver_data = 0},
+	{PCI_DEVICE(DIGI_VID, PCI_DEVICE_CLASSIC_4_422_DID), .driver_data = 1},
+	{PCI_DEVICE(DIGI_VID, PCI_DEVICE_CLASSIC_8_DID),     .driver_data = 2},
+	{PCI_DEVICE(DIGI_VID, PCI_DEVICE_CLASSIC_8_422_DID), .driver_data = 3},
+	{0,}
 };
 MODULE_DEVICE_TABLE(pci, dgnc_pci_tbl);
 
@@ -112,7 +73,7 @@ struct board_id {
 	unsigned int is_pci_express;
 };
 
-static struct board_id dgnc_Ids[] = {
+static const struct board_id dgnc_ids[] = {
 	{	PCI_DEVICE_CLASSIC_4_PCI_NAME,		4,	0	},
 	{	PCI_DEVICE_CLASSIC_4_422_PCI_NAME,	4,	0	},
 	{	PCI_DEVICE_CLASSIC_8_PCI_NAME,		8,	0	},
@@ -133,282 +94,47 @@ static struct board_id dgnc_Ids[] = {
 	{	NULL,					0,	0	}
 };
 
-static struct pci_driver dgnc_driver = {
-	.name		= "dgnc",
-	.probe		= dgnc_init_one,
-	.id_table       = dgnc_pci_tbl,
-};
+/* Remap PCI memory. */
 
-
-char *dgnc_state_text[] = {
-	"Board Failed",
-	"Board Found",
-	"Board READY",
-};
-
-
-/************************************************************************
- *
- * Driver load/unload functions
- *
- ************************************************************************/
-
-/*
- * dgnc_cleanup_module()
- *
- * Module unload.  This is where it all ends.
- */
-static void dgnc_cleanup_module(void)
-{
-	int i;
-	unsigned long flags;
-
-	spin_lock_irqsave(&dgnc_poll_lock, flags);
-	dgnc_poll_stop = 1;
-	spin_unlock_irqrestore(&dgnc_poll_lock, flags);
-
-	/* Turn off poller right away. */
-	del_timer_sync(&dgnc_poll_timer);
-
-	dgnc_remove_driver_sysfiles(&dgnc_driver);
-
-	device_destroy(dgnc_class, MKDEV(dgnc_Major, 0));
-	class_destroy(dgnc_class);
-	unregister_chrdev(dgnc_Major, "dgnc");
-
-	for (i = 0; i < dgnc_NumBoards; ++i) {
-		dgnc_remove_ports_sysfiles(dgnc_Board[i]);
-		dgnc_tty_uninit(dgnc_Board[i]);
-		dgnc_cleanup_board(dgnc_Board[i]);
-	}
-
-	dgnc_tty_post_uninit();
-
-	if (dgnc_NumBoards)
-		pci_unregister_driver(&dgnc_driver);
-}
-
-/*
- * init_module()
- *
- * Module load.  This is where it all starts.
- */
-static int __init dgnc_init_module(void)
+static int dgnc_do_remap(struct dgnc_board *brd)
 {
 	int rc = 0;
 
-	/*
-	 * Initialize global stuff
-	 */
-	rc = dgnc_start();
-
-	if (rc < 0)
-		return rc;
-
-	/*
-	 * Find and configure all the cards
-	 */
-	rc = pci_register_driver(&dgnc_driver);
-
-	/*
-	 * If something went wrong in the scan, bail out of driver.
-	 */
-	if (rc < 0) {
-		/* Only unregister the pci driver if it was actually registered. */
-		if (dgnc_NumBoards)
-			pci_unregister_driver(&dgnc_driver);
-		else
-			pr_warn("WARNING: dgnc driver load failed.  No Digi Neo or Classic boards found.\n");
-
-		dgnc_cleanup_module();
-	} else {
-		dgnc_create_driver_sysfiles(&dgnc_driver);
-	}
+	brd->re_map_membase = ioremap(brd->membase, 0x1000);
+	if (!brd->re_map_membase)
+		rc = -ENOMEM;
 
 	return rc;
 }
-
-module_init(dgnc_init_module);
-module_exit(dgnc_cleanup_module);
-
-/*
- * Start of driver.
- */
-static int dgnc_start(void)
-{
-	int rc = 0;
-	unsigned long flags;
-
-	/* make sure that the globals are init'd before we do anything else */
-	dgnc_init_globals();
-
-	/*
-	 * Register our base character device into the kernel.
-	 * This allows the download daemon to connect to the downld device
-	 * before any of the boards are init'ed.
-	 *
-	 * Register management/dpa devices
-	 */
-	rc = register_chrdev(0, "dgnc", &dgnc_BoardFops);
-	if (rc <= 0) {
-		pr_err(DRVSTR ": Can't register dgnc driver device (%d)\n", rc);
-		return -ENXIO;
-	}
-	dgnc_Major = rc;
-
-	dgnc_class = class_create(THIS_MODULE, "dgnc_mgmt");
-	device_create(dgnc_class, NULL,
-		MKDEV(dgnc_Major, 0),
-		NULL, "dgnc_mgmt");
-
-	/*
-	 * Init any global tty stuff.
-	 */
-	rc = dgnc_tty_preinit();
-
-	if (rc < 0) {
-		pr_err(DRVSTR ": tty preinit - not enough memory (%d)\n", rc);
-		return rc;
-	}
-
-	/* Start the poller */
-	spin_lock_irqsave(&dgnc_poll_lock, flags);
-	init_timer(&dgnc_poll_timer);
-	dgnc_poll_timer.function = dgnc_poll_handler;
-	dgnc_poll_timer.data = 0;
-	dgnc_poll_time = jiffies + dgnc_jiffies_from_ms(dgnc_poll_tick);
-	dgnc_poll_timer.expires = dgnc_poll_time;
-	spin_unlock_irqrestore(&dgnc_poll_lock, flags);
-
-	add_timer(&dgnc_poll_timer);
-
-	return rc;
-}
-
-/* returns count (>= 0), or negative on error */
-static int dgnc_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
-{
-	int rc;
-
-	/* wake up and enable device */
-	rc = pci_enable_device(pdev);
-
-	if (rc < 0) {
-		rc = -EIO;
-	} else {
-		rc = dgnc_found_board(pdev, ent->driver_data);
-		if (rc == 0)
-			dgnc_NumBoards++;
-	}
-	return rc;
-}
-
-/*
- * dgnc_cleanup_board()
- *
- * Free all the memory associated with a board
- */
-static void dgnc_cleanup_board(struct dgnc_board *brd)
-{
-	int i = 0;
-
-	if (!brd || brd->magic != DGNC_BOARD_MAGIC)
-		return;
-
-	switch (brd->device) {
-	case PCI_DEVICE_CLASSIC_4_DID:
-	case PCI_DEVICE_CLASSIC_8_DID:
-	case PCI_DEVICE_CLASSIC_4_422_DID:
-	case PCI_DEVICE_CLASSIC_8_422_DID:
-
-		/* Tell card not to interrupt anymore. */
-		outb(0, brd->iobase + 0x4c);
-		break;
-
-	default:
-		break;
-	}
-
-	if (brd->irq)
-		free_irq(brd->irq, brd);
-
-	tasklet_kill(&brd->helper_tasklet);
-
-	if (brd->re_map_membase) {
-		iounmap(brd->re_map_membase);
-		brd->re_map_membase = NULL;
-	}
-
-	if (brd->msgbuf_head) {
-		unsigned long flags;
-
-		spin_lock_irqsave(&dgnc_global_lock, flags);
-		brd->msgbuf = NULL;
-		printk("%s", brd->msgbuf_head);
-		kfree(brd->msgbuf_head);
-		brd->msgbuf_head = NULL;
-		spin_unlock_irqrestore(&dgnc_global_lock, flags);
-	}
-
-	/* Free all allocated channels structs */
-	for (i = 0; i < MAXPORTS ; i++) {
-		if (brd->channels[i]) {
-			kfree(brd->channels[i]->ch_rqueue);
-			kfree(brd->channels[i]->ch_equeue);
-			kfree(brd->channels[i]->ch_wqueue);
-			kfree(brd->channels[i]);
-			brd->channels[i] = NULL;
-		}
-	}
-
-	kfree(brd->flipbuf);
-
-	dgnc_Board[brd->boardnum] = NULL;
-
-	kfree(brd);
-}
-
 
 /*
  * dgnc_found_board()
  *
  * A board has been found, init it.
  */
-static int dgnc_found_board(struct pci_dev *pdev, int id)
+static struct dgnc_board *dgnc_found_board(struct pci_dev *pdev, int id)
 {
 	struct dgnc_board *brd;
 	unsigned int pci_irq;
 	int i = 0;
 	int rc = 0;
-	unsigned long flags;
 
 	/* get the board structure and prep it */
-	dgnc_Board[dgnc_NumBoards] = kzalloc(sizeof(*brd), GFP_KERNEL);
-	brd = dgnc_Board[dgnc_NumBoards];
-
+	brd = kzalloc(sizeof(*brd), GFP_KERNEL);
 	if (!brd)
-		return -ENOMEM;
-
-	/* make a temporary message buffer for the boot messages */
-	brd->msgbuf_head = kzalloc(sizeof(u8) * 8192, GFP_KERNEL);
-	brd->msgbuf = brd->msgbuf_head;
-
-	if (!brd->msgbuf) {
-		kfree(brd);
-		return -ENOMEM;
-	}
+		return ERR_PTR(-ENOMEM);
 
 	/* store the info for the board we've found */
 	brd->magic = DGNC_BOARD_MAGIC;
-	brd->boardnum = dgnc_NumBoards;
+	brd->boardnum = dgnc_num_boards;
 	brd->vendor = dgnc_pci_tbl[id].vendor;
 	brd->device = dgnc_pci_tbl[id].device;
 	brd->pdev = pdev;
 	brd->pci_bus = pdev->bus->number;
 	brd->pci_slot = PCI_SLOT(pdev->devfn);
-	brd->name = dgnc_Ids[id].name;
-	brd->maxports = dgnc_Ids[id].maxports;
-	if (dgnc_Ids[i].is_pci_express)
+	brd->name = dgnc_ids[id].name;
+	brd->maxports = dgnc_ids[id].maxports;
+	if (dgnc_ids[i].is_pci_express)
 		brd->bd_flags |= BD_IS_PCI_EXPRESS;
 	brd->dpastatus = BD_NOFEP;
 	init_waitqueue_head(&brd->state_wait);
@@ -418,9 +144,6 @@ static int dgnc_found_board(struct pci_dev *pdev, int id)
 
 	brd->state		= BOARD_FOUND;
 
-	for (i = 0; i < MAXPORTS; i++)
-		brd->channels[i] = NULL;
-
 	/* store which card & revision we have */
 	pci_read_config_word(pdev, PCI_SUBSYSTEM_VENDOR_ID, &brd->subvendor);
 	pci_read_config_word(pdev, PCI_SUBSYSTEM_ID, &brd->subdevice);
@@ -429,9 +152,7 @@ static int dgnc_found_board(struct pci_dev *pdev, int id)
 	pci_irq = pdev->irq;
 	brd->irq = pci_irq;
 
-
 	switch (brd->device) {
-
 	case PCI_DEVICE_CLASSIC_4_DID:
 	case PCI_DEVICE_CLASSIC_8_DID:
 	case PCI_DEVICE_CLASSIC_4_422_DID:
@@ -449,14 +170,14 @@ static int dgnc_found_board(struct pci_dev *pdev, int id)
 		 * 4	Memory Mapped UARTs and Status
 		 */
 
-
 		/* get the PCI Base Address Registers */
 		brd->membase = pci_resource_start(pdev, 4);
 
 		if (!brd->membase) {
 			dev_err(&brd->pdev->dev,
 				"Card has no PCI IO resources, failing.\n");
-			return -ENODEV;
+			rc = -ENODEV;
+			goto failed;
 		}
 
 		brd->membase_end = pci_resource_end(pdev, 4);
@@ -468,7 +189,7 @@ static int dgnc_found_board(struct pci_dev *pdev, int id)
 
 		brd->iobase	= pci_resource_start(pdev, 1);
 		brd->iobase_end = pci_resource_end(pdev, 1);
-		brd->iobase	= ((unsigned int) (brd->iobase)) & 0xFFFE;
+		brd->iobase	= ((unsigned int)(brd->iobase)) & 0xFFFE;
 
 		/* Assign the board_ops struct */
 		brd->bd_ops = &dgnc_cls_ops;
@@ -476,7 +197,10 @@ static int dgnc_found_board(struct pci_dev *pdev, int id)
 		brd->bd_uart_offset = 0x8;
 		brd->bd_dividend = 921600;
 
-		dgnc_do_remap(brd);
+		rc = dgnc_do_remap(brd);
+
+		if (rc < 0)
+			goto failed;
 
 		/* Get and store the board VPD, if it exists */
 		brd->bd_ops->vpd(brd);
@@ -489,7 +213,6 @@ static int dgnc_found_board(struct pci_dev *pdev, int id)
 		outb(0x43, brd->iobase + 0x4c);
 
 		break;
-
 
 	case PCI_DEVICE_NEO_4_DID:
 	case PCI_DEVICE_NEO_8_DID:
@@ -529,97 +252,44 @@ static int dgnc_found_board(struct pci_dev *pdev, int id)
 		brd->bd_uart_offset = 0x200;
 		brd->bd_dividend = 921600;
 
-		dgnc_do_remap(brd);
+		rc = dgnc_do_remap(brd);
 
-		if (brd->re_map_membase) {
+		if (rc < 0)
+			goto failed;
 
-			/* After remap is complete, we need to read and store the dvid */
-			brd->dvid = readb(brd->re_map_membase + 0x8D);
+		/* Read and store the dvid after remapping */
+		brd->dvid = readb(brd->re_map_membase + 0x8D);
 
-			/* Get and store the board VPD, if it exists */
-			brd->bd_ops->vpd(brd);
-		}
+		/* Get and store the board VPD, if it exists */
+		brd->bd_ops->vpd(brd);
+
 		break;
 
 	default:
 		dev_err(&brd->pdev->dev,
 			"Didn't find any compatible Neo/Classic PCI boards.\n");
-		return -ENXIO;
-
-	}
-
-	/*
-	 * Do tty device initialization.
-	 */
-
-	rc = dgnc_tty_register(brd);
-	if (rc < 0) {
-		dgnc_tty_uninit(brd);
-		pr_err(DRVSTR ": Can't register tty devices (%d)\n", rc);
-		brd->state = BOARD_FAILED;
-		brd->dpastatus = BD_NOFEP;
+		rc = -ENXIO;
 		goto failed;
 	}
-
-	rc = dgnc_finalize_board_init(brd);
-	if (rc < 0) {
-		pr_err(DRVSTR ": Can't finalize board init (%d)\n", rc);
-		brd->state = BOARD_FAILED;
-		brd->dpastatus = BD_NOFEP;
-
-		goto failed;
-	}
-
-	rc = dgnc_tty_init(brd);
-	if (rc < 0) {
-		dgnc_tty_uninit(brd);
-		pr_err(DRVSTR ": Can't init tty devices (%d)\n", rc);
-		brd->state = BOARD_FAILED;
-		brd->dpastatus = BD_NOFEP;
-
-		goto failed;
-	}
-
-	brd->state = BOARD_READY;
-	brd->dpastatus = BD_RUNNING;
-
-	dgnc_create_ports_sysfiles(brd);
 
 	/* init our poll helper tasklet */
-	tasklet_init(&brd->helper_tasklet, brd->bd_ops->tasklet, (unsigned long) brd);
-
-	spin_lock_irqsave(&dgnc_global_lock, flags);
-	brd->msgbuf = NULL;
-	printk("%s", brd->msgbuf_head);
-	kfree(brd->msgbuf_head);
-	brd->msgbuf_head = NULL;
-	spin_unlock_irqrestore(&dgnc_global_lock, flags);
-
-	/*
-	 * allocate flip buffer for board.
-	 *
-	 * Okay to malloc with GFP_KERNEL, we are not at interrupt
-	 * context, and there are no locks held.
-	 */
-	brd->flipbuf = kzalloc(MYFLIPLEN, GFP_KERNEL);
+	tasklet_init(&brd->helper_tasklet,
+		     brd->bd_ops->tasklet,
+		     (unsigned long)brd);
 
 	wake_up_interruptible(&brd->state_wait);
 
-	return 0;
+	return brd;
 
 failed:
+	kfree(brd);
 
-	return -ENXIO;
-
+	return ERR_PTR(rc);
 }
 
-
-static int dgnc_finalize_board_init(struct dgnc_board *brd)
+static int dgnc_request_irq(struct dgnc_board *brd)
 {
 	int rc = 0;
-
-	if (!brd || brd->magic != DGNC_BOARD_MAGIC)
-		return -ENODEV;
 
 	if (brd->irq) {
 		rc = request_irq(brd->irq, brd->bd_ops->intr,
@@ -636,44 +306,35 @@ static int dgnc_finalize_board_init(struct dgnc_board *brd)
 	return rc;
 }
 
-/*
- * Remap PCI memory.
- */
-static void dgnc_do_remap(struct dgnc_board *brd)
+static void dgnc_free_irq(struct dgnc_board *brd)
 {
-
-	if (!brd || brd->magic != DGNC_BOARD_MAGIC)
-		return;
-
-	brd->re_map_membase = ioremap(brd->membase, 0x1000);
+	if (brd->irq)
+		free_irq(brd->irq, brd);
 }
 
-
-/*****************************************************************************
-*
-* Function:
-*
-*    dgnc_poll_handler
-*
-* Author:
-*
-*    Scott H Kilau
-*
-* Parameters:
-*
-*    dummy -- ignored
-*
-* Return Values:
-*
-*    none
-*
-* Description:
-*
-*    As each timer expires, it determines (a) whether the "transmit"
-*    waiter needs to be woken up, and (b) whether the poller needs to
-*    be rescheduled.
-*
-******************************************************************************/
+/*
+ * Function:
+ *
+ *    dgnc_poll_handler
+ *
+ * Author:
+ *
+ *    Scott H Kilau
+ *
+ * Parameters:
+ *
+ *    dummy -- ignored
+ *
+ * Return Values:
+ *
+ *    none
+ *
+ * Description:
+ *
+ *    As each timer expires, it determines (a) whether the "transmit"
+ *    waiter needs to be woken up, and (b) whether the poller needs to
+ *    be rescheduled.
+ */
 
 static void dgnc_poll_handler(ulong dummy)
 {
@@ -683,12 +344,12 @@ static void dgnc_poll_handler(ulong dummy)
 	unsigned long new_time;
 
 	/* Go thru each board, kicking off a tasklet for each if needed */
-	for (i = 0; i < dgnc_NumBoards; i++) {
-		brd = dgnc_Board[i];
+	for (i = 0; i < dgnc_num_boards; i++) {
+		brd = dgnc_board[i];
 
 		spin_lock_irqsave(&brd->bd_lock, flags);
 
-		/* If board is in a failed state, don't bother scheduling a tasklet */
+		/* If board is in a failed state don't schedule a tasklet */
 		if (brd->state == BOARD_FAILED) {
 			spin_unlock_irqrestore(&brd->bd_lock, flags);
 			continue;
@@ -700,20 +361,17 @@ static void dgnc_poll_handler(ulong dummy)
 		spin_unlock_irqrestore(&brd->bd_lock, flags);
 	}
 
-	/*
-	 * Schedule ourself back at the nominal wakeup interval.
-	 */
+	/* Schedule ourself back at the nominal wakeup interval. */
+
 	spin_lock_irqsave(&dgnc_poll_lock, flags);
 	dgnc_poll_time += dgnc_jiffies_from_ms(dgnc_poll_tick);
 
 	new_time = dgnc_poll_time - jiffies;
 
-	if ((ulong) new_time >= 2 * dgnc_poll_tick)
-		dgnc_poll_time = jiffies +  dgnc_jiffies_from_ms(dgnc_poll_tick);
+	if ((ulong)new_time >= 2 * dgnc_poll_tick)
+		dgnc_poll_time = jiffies + dgnc_jiffies_from_ms(dgnc_poll_tick);
 
-	init_timer(&dgnc_poll_timer);
-	dgnc_poll_timer.function = dgnc_poll_handler;
-	dgnc_poll_timer.data = 0;
+	setup_timer(&dgnc_poll_timer, dgnc_poll_handler, 0);
 	dgnc_poll_timer.expires = dgnc_poll_time;
 	spin_unlock_irqrestore(&dgnc_poll_lock, flags);
 
@@ -721,22 +379,239 @@ static void dgnc_poll_handler(ulong dummy)
 		add_timer(&dgnc_poll_timer);
 }
 
+/* returns count (>= 0), or negative on error */
+static int dgnc_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+{
+	int rc;
+	struct dgnc_board *brd;
+
+	/* wake up and enable device */
+	rc = pci_enable_device(pdev);
+
+	if (rc)
+		return -EIO;
+
+	brd = dgnc_found_board(pdev, ent->driver_data);
+	if (IS_ERR(brd))
+		return PTR_ERR(brd);
+
+	/* Do tty device initialization. */
+
+	rc = dgnc_tty_register(brd);
+	if (rc < 0) {
+		pr_err(DRVSTR ": Can't register tty devices (%d)\n", rc);
+		goto failed;
+	}
+
+	rc = dgnc_request_irq(brd);
+	if (rc < 0) {
+		pr_err(DRVSTR ": Can't finalize board init (%d)\n", rc);
+		goto unregister_tty;
+	}
+
+	rc = dgnc_tty_init(brd);
+	if (rc < 0) {
+		pr_err(DRVSTR ": Can't init tty devices (%d)\n", rc);
+		goto free_irq;
+	}
+
+	brd->state = BOARD_READY;
+	brd->dpastatus = BD_RUNNING;
+
+	dgnc_board[dgnc_num_boards++] = brd;
+
+	return 0;
+
+free_irq:
+	dgnc_free_irq(brd);
+unregister_tty:
+	dgnc_tty_unregister(brd);
+
+failed:
+	kfree(brd);
+
+	return rc;
+}
+
+static struct pci_driver dgnc_driver = {
+	.name		= "dgnc",
+	.probe		= dgnc_init_one,
+	.id_table       = dgnc_pci_tbl,
+};
+
+/* Start of driver. */
+
+static int dgnc_start(void)
+{
+	int rc = 0;
+	unsigned long flags;
+	struct device *dev;
+
+	/* make sure timer is initialized before we do anything else */
+	init_timer(&dgnc_poll_timer);
+
+	/*
+	 * Register our base character device into the kernel.
+	 * This allows the download daemon to connect to the downld device
+	 * before any of the boards are init'ed.
+	 *
+	 * Register management/dpa devices
+	 */
+	rc = register_chrdev(0, "dgnc", &dgnc_board_fops);
+	if (rc < 0) {
+		pr_err(DRVSTR ": Can't register dgnc driver device (%d)\n", rc);
+		return rc;
+	}
+	dgnc_major = rc;
+
+	dgnc_class = class_create(THIS_MODULE, "dgnc_mgmt");
+	if (IS_ERR(dgnc_class)) {
+		rc = PTR_ERR(dgnc_class);
+		pr_err(DRVSTR ": Can't create dgnc_mgmt class (%d)\n", rc);
+		goto failed_class;
+	}
+
+	dev = device_create(dgnc_class, NULL,
+			    MKDEV(dgnc_major, 0),
+			NULL, "dgnc_mgmt");
+	if (IS_ERR(dev)) {
+		rc = PTR_ERR(dev);
+		pr_err(DRVSTR ": Can't create device (%d)\n", rc);
+		goto failed_device;
+	}
+
+	/* Start the poller */
+	spin_lock_irqsave(&dgnc_poll_lock, flags);
+	setup_timer(&dgnc_poll_timer, dgnc_poll_handler, 0);
+	dgnc_poll_time = jiffies + dgnc_jiffies_from_ms(dgnc_poll_tick);
+	dgnc_poll_timer.expires = dgnc_poll_time;
+	spin_unlock_irqrestore(&dgnc_poll_lock, flags);
+
+	add_timer(&dgnc_poll_timer);
+
+	return 0;
+
+failed_device:
+	class_destroy(dgnc_class);
+failed_class:
+	unregister_chrdev(dgnc_major, "dgnc");
+	return rc;
+}
+
 /*
- * dgnc_init_globals()
+ * dgnc_cleanup_board()
  *
- * This is where we initialize the globals from the static insmod
- * configuration variables.  These are declared near the head of
- * this file.
+ * Free all the memory associated with a board
  */
-static void dgnc_init_globals(void)
+static void dgnc_cleanup_board(struct dgnc_board *brd)
 {
 	int i = 0;
 
-	dgnc_NumBoards		= 0;
+	if (!brd || brd->magic != DGNC_BOARD_MAGIC)
+		return;
 
-	for (i = 0; i < MAXBOARDS; i++)
-		dgnc_Board[i] = NULL;
+	switch (brd->device) {
+	case PCI_DEVICE_CLASSIC_4_DID:
+	case PCI_DEVICE_CLASSIC_8_DID:
+	case PCI_DEVICE_CLASSIC_4_422_DID:
+	case PCI_DEVICE_CLASSIC_8_422_DID:
 
-	init_timer(&dgnc_poll_timer);
+		/* Tell card not to interrupt anymore. */
+		outb(0, brd->iobase + 0x4c);
+		break;
+
+	default:
+		break;
+	}
+
+	if (brd->irq)
+		free_irq(brd->irq, brd);
+
+	tasklet_kill(&brd->helper_tasklet);
+
+	if (brd->re_map_membase) {
+		iounmap(brd->re_map_membase);
+		brd->re_map_membase = NULL;
+	}
+
+	/* Free all allocated channels structs */
+	for (i = 0; i < MAXPORTS ; i++) {
+		if (brd->channels[i]) {
+			kfree(brd->channels[i]->ch_rqueue);
+			kfree(brd->channels[i]->ch_equeue);
+			kfree(brd->channels[i]->ch_wqueue);
+			kfree(brd->channels[i]);
+			brd->channels[i] = NULL;
+		}
+	}
+
+	dgnc_board[brd->boardnum] = NULL;
+
+	kfree(brd);
 }
 
+/* Driver load/unload functions */
+
+static void cleanup(void)
+{
+	int i;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dgnc_poll_lock, flags);
+	dgnc_poll_stop = 1;
+	spin_unlock_irqrestore(&dgnc_poll_lock, flags);
+
+	/* Turn off poller right away. */
+	del_timer_sync(&dgnc_poll_timer);
+
+	device_destroy(dgnc_class, MKDEV(dgnc_major, 0));
+	class_destroy(dgnc_class);
+	unregister_chrdev(dgnc_major, "dgnc");
+
+	for (i = 0; i < dgnc_num_boards; ++i) {
+		dgnc_cleanup_tty(dgnc_board[i]);
+		dgnc_cleanup_board(dgnc_board[i]);
+	}
+}
+
+/*
+ * dgnc_cleanup_module()
+ *
+ * Module unload.  This is where it all ends.
+ */
+static void __exit dgnc_cleanup_module(void)
+{
+	cleanup();
+	pci_unregister_driver(&dgnc_driver);
+}
+
+/*
+ * init_module()
+ *
+ * Module load.  This is where it all starts.
+ */
+static int __init dgnc_init_module(void)
+{
+	int rc;
+
+	/* Initialize global stuff */
+
+	rc = dgnc_start();
+
+	if (rc < 0)
+		return rc;
+
+	/* Find and configure all the cards */
+
+	rc = pci_register_driver(&dgnc_driver);
+	if (rc) {
+		pr_warn("WARNING: dgnc driver load failed.  No Digi Neo or Classic boards found.\n");
+		cleanup();
+		return rc;
+	}
+
+	return 0;
+}
+
+module_init(dgnc_init_module);
+module_exit(dgnc_cleanup_module);

@@ -2,6 +2,7 @@
 #include <linux/seq_file.h>
 #include <linux/poll.h>
 #include <linux/ns_common.h>
+#include <linux/fs_pin.h>
 
 struct mnt_namespace {
 	atomic_t		count;
@@ -9,9 +10,12 @@ struct mnt_namespace {
 	struct mount *	root;
 	struct list_head	list;
 	struct user_namespace	*user_ns;
+	struct ucounts		*ucounts;
 	u64			seq;	/* Sequence number to prevent loops */
 	wait_queue_head_t poll;
 	u64 event;
+	unsigned int		mounts; /* # of mounts in the namespace */
+	unsigned int		pending_mounts;
 };
 
 struct mnt_pcp {
@@ -62,7 +66,8 @@ struct mount {
 	int mnt_group_id;		/* peer group identifier */
 	int mnt_expiry_mark;		/* true if marked for expiry */
 	struct hlist_head mnt_pins;
-	struct path mnt_ex_mountpoint;
+	struct fs_pin mnt_umount;
+	struct dentry *mnt_ex_mountpoint;
 };
 
 #define MNT_NS_INTERNAL ERR_PTR(-EINVAL) /* distinct from any mnt_namespace */
@@ -84,9 +89,15 @@ static inline int is_mounted(struct vfsmount *mnt)
 }
 
 extern struct mount *__lookup_mnt(struct vfsmount *, struct dentry *);
-extern struct mount *__lookup_mnt_last(struct vfsmount *, struct dentry *);
 
+extern int __legitimize_mnt(struct vfsmount *, unsigned);
 extern bool legitimize_mnt(struct vfsmount *, unsigned);
+
+static inline bool __path_is_mountpoint(const struct path *path)
+{
+	struct mount *m = __lookup_mnt(path->mnt, path->dentry);
+	return m && likely(!(m->mnt.mnt_flags & MNT_SYNC_UMOUNT));
+}
 
 extern void __detach_mounts(struct dentry *dentry);
 
@@ -115,7 +126,6 @@ static inline void unlock_mount_hash(void)
 }
 
 struct proc_mounts {
-	struct seq_file m;
 	struct mnt_namespace *ns;
 	struct path root;
 	int (*show)(struct seq_file *, struct vfsmount *);
@@ -123,8 +133,6 @@ struct proc_mounts {
 	u64 cached_event;
 	loff_t cached_index;
 };
-
-#define proc_mounts(p) (container_of((p), struct proc_mounts, m))
 
 extern const struct seq_operations mounts_op;
 

@@ -72,27 +72,6 @@ static inline u32 am33xx_cm_rmw_reg_bits(u32 mask, u32 bits, s16 inst, s16 idx)
 	return v;
 }
 
-static inline u32 am33xx_cm_set_reg_bits(u32 bits, s16 inst, s16 idx)
-{
-	return am33xx_cm_rmw_reg_bits(bits, bits, inst, idx);
-}
-
-static inline u32 am33xx_cm_clear_reg_bits(u32 bits, s16 inst, s16 idx)
-{
-	return am33xx_cm_rmw_reg_bits(bits, 0x0, inst, idx);
-}
-
-static inline u32 am33xx_cm_read_reg_bits(u16 inst, s16 idx, u32 mask)
-{
-	u32 v;
-
-	v = am33xx_cm_read_reg(inst, idx);
-	v &= mask;
-	v >>= __ffs(mask);
-
-	return v;
-}
-
 /**
  * _clkctrl_idlest - read a CM_*_CLKCTRL register; mask & shift IDLEST bitfield
  * @inst: CM instance register offset (*_INST macro)
@@ -264,9 +243,6 @@ static int am33xx_cm_wait_module_idle(u8 part, s16 inst, u16 clkctrl_offs,
 {
 	int i = 0;
 
-	if (!clkctrl_offs)
-		return 0;
-
 	omap_test_timeout((_clkctrl_idlest(inst, clkctrl_offs) ==
 				CLKCTRL_IDLEST_DISABLED),
 				MAX_MODULE_READY_TIME, i);
@@ -373,7 +349,7 @@ static struct cm_ll_data am33xx_cm_ll_data = {
 	.module_disable		= &am33xx_cm_module_disable,
 };
 
-int __init am33xx_cm_init(void)
+int __init am33xx_cm_init(const struct omap_prcm_init_data *data)
 {
 	return cm_register(&am33xx_cm_ll_data);
 }

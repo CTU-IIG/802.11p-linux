@@ -227,7 +227,7 @@ err_i2c:
 	return ret;
 }
 
-static struct regulator_ops lp8755_buck_ops = {
+static const struct regulator_ops lp8755_buck_ops = {
 	.map_voltage = regulator_map_voltage_linear,
 	.list_voltage = regulator_list_voltage_linear,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
@@ -419,20 +419,16 @@ static int lp8755_int_config(struct lp8755_chip *pchip)
 	}
 
 	ret = lp8755_read(pchip, 0x0F, &regval);
-	if (ret < 0)
-		goto err_i2c;
-	pchip->irqmask = regval;
-	ret = request_threaded_irq(pchip->irq, NULL, lp8755_irq_handler,
-				   IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-				   "lp8755-irq", pchip);
-	if (ret)
+	if (ret < 0) {
+		dev_err(pchip->dev, "i2c acceess error %s\n", __func__);
 		return ret;
+	}
 
-	return ret;
-
-err_i2c:
-	dev_err(pchip->dev, "i2c acceess error %s\n", __func__);
-	return ret;
+	pchip->irqmask = regval;
+	return devm_request_threaded_irq(pchip->dev, pchip->irq, NULL,
+					 lp8755_irq_handler,
+					 IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+					 "lp8755-irq", pchip);
 }
 
 static const struct regmap_config lp8755_regmap = {
@@ -513,9 +509,6 @@ static int lp8755_remove(struct i2c_client *client)
 
 	for (icnt = 0; icnt < LP8755_BUCK_MAX; icnt++)
 		lp8755_write(pchip, icnt, 0x00);
-
-	if (pchip->irq != 0)
-		free_irq(pchip->irq, pchip);
 
 	return 0;
 }

@@ -181,7 +181,7 @@ static void net2272_dequeue_all(struct net2272_ep *);
 static int net2272_kick_dma(struct net2272_ep *, struct net2272_request *);
 static int net2272_fifo_status(struct usb_ep *);
 
-static struct usb_ep_ops net2272_ep_ops;
+static const struct usb_ep_ops net2272_ep_ops;
 
 /*---------------------------------------------------------------------------*/
 
@@ -202,10 +202,10 @@ net2272_enable(struct usb_ep *_ep, const struct usb_endpoint_descriptor *desc)
 	if (!dev->driver || dev->gadget.speed == USB_SPEED_UNKNOWN)
 		return -ESHUTDOWN;
 
-	max = usb_endpoint_maxp(desc) & 0x1fff;
+	max = usb_endpoint_maxp(desc);
 
 	spin_lock_irqsave(&dev->lock, flags);
-	_ep->maxpacket = max & 0x7fff;
+	_ep->maxpacket = max;
 	ep->desc = desc;
 
 	/* net2272_ep_reset() has already been called */
@@ -329,12 +329,10 @@ static int net2272_disable(struct usb_ep *_ep)
 static struct usb_request *
 net2272_alloc_request(struct usb_ep *_ep, gfp_t gfp_flags)
 {
-	struct net2272_ep *ep;
 	struct net2272_request *req;
 
 	if (!_ep)
 		return NULL;
-	ep = container_of(_ep, struct net2272_ep, ep);
 
 	req = kzalloc(sizeof(*req), gfp_flags);
 	if (!req)
@@ -348,10 +346,8 @@ net2272_alloc_request(struct usb_ep *_ep, gfp_t gfp_flags)
 static void
 net2272_free_request(struct usb_ep *_ep, struct usb_request *_req)
 {
-	struct net2272_ep *ep;
 	struct net2272_request *req;
 
-	ep = container_of(_ep, struct net2272_ep, ep);
 	if (!_ep || !_req)
 		return;
 
@@ -1071,7 +1067,7 @@ net2272_fifo_flush(struct usb_ep *_ep)
 	net2272_ep_write(ep, EP_STAT1, 1 << BUFFER_FLUSH);
 }
 
-static struct usb_ep_ops net2272_ep_ops = {
+static const struct usb_ep_ops net2272_ep_ops = {
 	.enable        = net2272_enable,
 	.disable       = net2272_disable,
 
@@ -1132,13 +1128,10 @@ net2272_wakeup(struct usb_gadget *_gadget)
 static int
 net2272_set_selfpowered(struct usb_gadget *_gadget, int value)
 {
-	struct net2272 *dev;
-
 	if (!_gadget)
 		return -ENODEV;
-	dev = container_of(_gadget, struct net2272, gadget);
 
-	dev->is_selfpowered = value;
+	_gadget->is_selfpowered = (value != 0);
 
 	return 0;
 }
@@ -1407,6 +1400,17 @@ net2272_usb_reinit(struct net2272 *dev)
 		else
 			ep->fifo_size = 64;
 		net2272_ep_reset(ep);
+
+		if (i == 0) {
+			ep->ep.caps.type_control = true;
+		} else {
+			ep->ep.caps.type_iso = true;
+			ep->ep.caps.type_bulk = true;
+			ep->ep.caps.type_int = true;
+		}
+
+		ep->ep.caps.dir_in = true;
+		ep->ep.caps.dir_out = true;
 	}
 	usb_ep_set_maxpacket_limit(&dev->ep[0].ep, 64);
 
@@ -1829,9 +1833,9 @@ net2272_handle_stat0_irqs(struct net2272 *dev, u8 stat)
 				if (!e || u.r.wLength > 2)
 					goto do_stall;
 				if (net2272_ep_read(e, EP_RSPSET) & (1 << ENDPOINT_HALT))
-					status = __constant_cpu_to_le16(1);
+					status = cpu_to_le16(1);
 				else
-					status = __constant_cpu_to_le16(0);
+					status = cpu_to_le16(0);
 
 				/* don't bother with a request object! */
 				net2272_ep_write(&dev->ep[0], EP_IRQENB, 0);
@@ -1844,7 +1848,7 @@ net2272_handle_stat0_irqs(struct net2272 *dev, u8 stat)
 			case USB_RECIP_DEVICE:
 				if (u.r.wLength > 2)
 					goto do_stall;
-				if (dev->is_selfpowered)
+				if (dev->gadget.is_selfpowered)
 					status = (1 << USB_DEVICE_SELF_POWERED);
 
 				/* don't bother with a request object! */

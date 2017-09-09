@@ -15,11 +15,6 @@
  * WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #include <media/v4l2-dev.h>
@@ -171,6 +166,9 @@ void v4l2_event_queue(struct video_device *vdev, const struct v4l2_event *ev)
 	struct v4l2_fh *fh;
 	unsigned long flags;
 	struct timespec timestamp;
+
+	if (vdev == NULL)
+		return;
 
 	ktime_get_ts(&timestamp);
 

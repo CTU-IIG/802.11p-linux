@@ -94,6 +94,7 @@ static const struct hstcp_aimd_val {
 
 struct hstcp {
 	u32	ai;
+	u32	loss_cwnd;
 };
 
 static void hstcp_init(struct sock *sk)
@@ -116,7 +117,7 @@ static void hstcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	if (tp->snd_cwnd <= tp->snd_ssthresh)
+	if (tcp_in_slow_start(tp))
 		tcp_slow_start(tp, acked);
 	else {
 		/* Update AIMD parameters.
@@ -150,16 +151,24 @@ static void hstcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 static u32 hstcp_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
-	const struct hstcp *ca = inet_csk_ca(sk);
+	struct hstcp *ca = inet_csk_ca(sk);
 
+	ca->loss_cwnd = tp->snd_cwnd;
 	/* Do multiplicative decrease */
 	return max(tp->snd_cwnd - ((tp->snd_cwnd * hstcp_aimd_vals[ca->ai].md) >> 8), 2U);
 }
 
+static u32 hstcp_cwnd_undo(struct sock *sk)
+{
+	const struct hstcp *ca = inet_csk_ca(sk);
+
+	return max(tcp_sk(sk)->snd_cwnd, ca->loss_cwnd);
+}
 
 static struct tcp_congestion_ops tcp_highspeed __read_mostly = {
 	.init		= hstcp_init,
 	.ssthresh	= hstcp_ssthresh,
+	.undo_cwnd	= hstcp_cwnd_undo,
 	.cong_avoid	= hstcp_cong_avoid,
 
 	.owner		= THIS_MODULE,

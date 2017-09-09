@@ -12,10 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  * File: channel.c
  *
  */
@@ -144,7 +140,7 @@ void vnt_init_bands(struct vnt_private *priv)
 			ch[i].flags = IEEE80211_CHAN_NO_HT40;
 		}
 
-		priv->hw->wiphy->bands[IEEE80211_BAND_5GHZ] =
+		priv->hw->wiphy->bands[NL80211_BAND_5GHZ] =
 						&vnt_supported_5ghz_band;
 	/* fallthrough */
 	case RF_RFMD2959:
@@ -159,7 +155,7 @@ void vnt_init_bands(struct vnt_private *priv)
 			ch[i].flags = IEEE80211_CHAN_NO_HT40;
 		}
 
-		priv->hw->wiphy->bands[IEEE80211_BAND_2GHZ] =
+		priv->hw->wiphy->bands[NL80211_BAND_2GHZ] =
 						&vnt_supported_2ghz_band;
 		break;
 	}
@@ -174,47 +170,64 @@ void vnt_init_bands(struct vnt_private *priv)
  * Return Value: true if succeeded; false if failed.
  *
  */
-bool set_channel(void *pDeviceHandler, unsigned int uConnectionChannel)
+bool set_channel(struct vnt_private *priv, struct ieee80211_channel *ch)
 {
-	struct vnt_private *pDevice = pDeviceHandler;
-	bool bResult = true;
+	bool ret = true;
 
-	if (pDevice->byCurrentCh == uConnectionChannel)
-		return bResult;
+	if (priv->byCurrentCh == ch->hw_value)
+		return ret;
 
-	/* clear NAV */
-	MACvRegBitsOn(pDevice->PortOffset, MAC_REG_MACCR, MACCR_CLRNAV);
+	/* Set VGA to max sensitivity */
+	if (priv->bUpdateBBVGA &&
+	    priv->byBBVGACurrent != priv->abyBBVGA[0]) {
+		priv->byBBVGACurrent = priv->abyBBVGA[0];
 
-	/* TX_PE will reserve 3 us for MAX2829 A mode only, it is for better TX throughput */
-
-	if (pDevice->byRFType == RF_AIROHA7230)
-		RFbAL7230SelectChannelPostProcess(pDevice, pDevice->byCurrentCh,
-						  (unsigned char)uConnectionChannel);
-
-	pDevice->byCurrentCh = (unsigned char)uConnectionChannel;
-	bResult &= RFbSelectChannel(pDevice, pDevice->byRFType,
-				    (unsigned char)uConnectionChannel);
-
-	/* Init Synthesizer Table */
-	if (pDevice->bEnablePSMode)
-		RFvWriteWakeProgSyn(pDevice, pDevice->byRFType, uConnectionChannel);
-
-	BBvSoftwareReset(pDevice);
-
-	if (pDevice->byLocalID > REV_ID_VT3253_B1) {
-		/* set HW default power register */
-		MACvSelectPage1(pDevice->PortOffset);
-		RFbSetPower(pDevice, RATE_1M, pDevice->byCurrentCh);
-		VNSvOutPortB(pDevice->PortOffset + MAC_REG_PWRCCK, pDevice->byCurPwr);
-		RFbSetPower(pDevice, RATE_6M, pDevice->byCurrentCh);
-		VNSvOutPortB(pDevice->PortOffset + MAC_REG_PWROFDM, pDevice->byCurPwr);
-		MACvSelectPage0(pDevice->PortOffset);
+		BBvSetVGAGainOffset(priv, priv->byBBVGACurrent);
 	}
 
-	if (pDevice->byBBType == BB_TYPE_11B)
-		RFbSetPower(pDevice, RATE_1M, pDevice->byCurrentCh);
-	else
-		RFbSetPower(pDevice, RATE_6M, pDevice->byCurrentCh);
+	/* clear NAV */
+	MACvRegBitsOn(priv->PortOffset, MAC_REG_MACCR, MACCR_CLRNAV);
 
-	return bResult;
+	/* TX_PE will reserve 3 us for MAX2829 A mode only,
+	 * it is for better TX throughput
+	 */
+
+	if (priv->byRFType == RF_AIROHA7230)
+		RFbAL7230SelectChannelPostProcess(priv, priv->byCurrentCh,
+						  ch->hw_value);
+
+	priv->byCurrentCh = ch->hw_value;
+	ret &= RFbSelectChannel(priv, priv->byRFType,
+				ch->hw_value);
+
+	/* Init Synthesizer Table */
+	if (priv->bEnablePSMode)
+		RFvWriteWakeProgSyn(priv, priv->byRFType, ch->hw_value);
+
+	BBvSoftwareReset(priv);
+
+	if (priv->byLocalID > REV_ID_VT3253_B1) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&priv->lock, flags);
+
+		/* set HW default power register */
+		MACvSelectPage1(priv->PortOffset);
+		RFbSetPower(priv, RATE_1M, priv->byCurrentCh);
+		VNSvOutPortB(priv->PortOffset + MAC_REG_PWRCCK,
+			     priv->byCurPwr);
+		RFbSetPower(priv, RATE_6M, priv->byCurrentCh);
+		VNSvOutPortB(priv->PortOffset + MAC_REG_PWROFDM,
+			     priv->byCurPwr);
+		MACvSelectPage0(priv->PortOffset);
+
+		spin_unlock_irqrestore(&priv->lock, flags);
+	}
+
+	if (priv->byBBType == BB_TYPE_11B)
+		RFbSetPower(priv, RATE_1M, priv->byCurrentCh);
+	else
+		RFbSetPower(priv, RATE_6M, priv->byCurrentCh);
+
+	return ret;
 }

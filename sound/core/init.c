@@ -100,35 +100,28 @@ int (*snd_mixer_oss_notify_callback)(struct snd_card *card, int free_flag);
 EXPORT_SYMBOL(snd_mixer_oss_notify_callback);
 #endif
 
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 static void snd_card_id_read(struct snd_info_entry *entry,
 			     struct snd_info_buffer *buffer)
 {
 	snd_iprintf(buffer, "%s\n", entry->card->id);
 }
 
-static inline int init_info_for_card(struct snd_card *card)
+static int init_info_for_card(struct snd_card *card)
 {
-	int err;
 	struct snd_info_entry *entry;
 
-	if ((err = snd_info_card_register(card)) < 0) {
-		dev_dbg(card->dev, "unable to create card info\n");
-		return err;
-	}
-	if ((entry = snd_info_create_card_entry(card, "id", card->proc_root)) == NULL) {
+	entry = snd_info_create_card_entry(card, "id", card->proc_root);
+	if (!entry) {
 		dev_dbg(card->dev, "unable to create card entry\n");
-		return err;
+		return -ENOMEM;
 	}
 	entry->c.text.read = snd_card_id_read;
-	if (snd_info_register(entry) < 0) {
-		snd_info_free_entry(entry);
-		entry = NULL;
-	}
 	card->proc_id = entry;
-	return 0;
+
+	return snd_info_card_register(card);
 }
-#else /* !CONFIG_PROC_FS */
+#else /* !CONFIG_SND_PROC_FS */
 #define init_info_for_card(card)
 #endif
 
@@ -157,8 +150,31 @@ static int get_slot_from_bitmask(int mask, int (*check)(struct module *, int),
 	return mask; /* unchanged */
 }
 
+/* the default release callback set in snd_device_initialize() below;
+ * this is just NOP for now, as almost all jobs are already done in
+ * dev_free callback of snd_device chain instead.
+ */
+static void default_release(struct device *dev)
+{
+}
+
+/**
+ * snd_device_initialize - Initialize struct device for sound devices
+ * @dev: device to initialize
+ * @card: card to assign, optional
+ */
+void snd_device_initialize(struct device *dev, struct snd_card *card)
+{
+	device_initialize(dev);
+	if (card)
+		dev->parent = &card->card_dev;
+	dev->class = sound_class;
+	dev->release = default_release;
+}
+EXPORT_SYMBOL_GPL(snd_device_initialize);
+
 static int snd_card_do_free(struct snd_card *card);
-static const struct attribute_group *card_dev_attr_groups[];
+static const struct attribute_group card_dev_attr_group;
 
 static void release_card_device(struct device *dev)
 {
@@ -246,10 +262,14 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 	card->card_dev.parent = parent;
 	card->card_dev.class = sound_class;
 	card->card_dev.release = release_card_device;
-	card->card_dev.groups = card_dev_attr_groups;
+	card->card_dev.groups = card->dev_groups;
+	card->dev_groups[0] = &card_dev_attr_group;
 	err = kobject_set_name(&card->card_dev.kobj, "card%d", idx);
 	if (err < 0)
 		goto __error;
+
+	snprintf(card->irq_descr, sizeof(card->irq_descr), "%s:%s",
+		 dev_driver_string(card->dev), dev_name(&card->card_dev));
 
 	/* the control interface cannot be accessed from the user space until */
 	/* snd_cards_bitmask and snd_cards are set with snd_card_register */
@@ -376,7 +396,6 @@ static const struct file_operations snd_shutdown_f_ops =
 int snd_card_disconnect(struct snd_card *card)
 {
 	struct snd_monitor_file *mfile;
-	int err;
 
 	if (!card)
 		return -EINVAL;
@@ -421,9 +440,7 @@ int snd_card_disconnect(struct snd_card *card)
 #endif
 
 	/* notify all devices that we are disconnected */
-	err = snd_device_disconnect_all(card);
-	if (err < 0)
-		dev_err(card->dev, "not all devices for card %i can be disconnected\n", card->number);
+	snd_device_disconnect_all(card);
 
 	snd_info_card_disconnect(card);
 	if (card->registered) {
@@ -677,14 +694,32 @@ static struct attribute *card_dev_attrs[] = {
 	NULL
 };
 
-static struct attribute_group card_dev_attr_group = {
+static const struct attribute_group card_dev_attr_group = {
 	.attrs	= card_dev_attrs,
 };
 
-static const struct attribute_group *card_dev_attr_groups[] = {
-	&card_dev_attr_group,
-	NULL
+/**
+ * snd_card_add_dev_attr - Append a new sysfs attribute group to card
+ * @card: card instance
+ * @group: attribute group to append
+ */
+int snd_card_add_dev_attr(struct snd_card *card,
+			  const struct attribute_group *group)
+{
+	int i;
+
+	/* loop for (arraysize-1) here to keep NULL at the last entry */
+	for (i = 0; i < ARRAY_SIZE(card->dev_groups) - 1; i++) {
+		if (!card->dev_groups[i]) {
+			card->dev_groups[i] = group;
+			return 0;
+		}
+	}
+
+	dev_err(card->dev, "Too many groups assigned\n");
+	return -ENOSPC;
 };
+EXPORT_SYMBOL_GPL(snd_card_add_dev_attr);
 
 /**
  *  snd_card_register - register the soundcard
@@ -717,7 +752,7 @@ int snd_card_register(struct snd_card *card)
 	if (snd_cards[card->number]) {
 		/* already registered */
 		mutex_unlock(&snd_card_mutex);
-		return 0;
+		return snd_info_card_register(card); /* register pending info */
 	}
 	if (*card->id) {
 		/* make a unique id name from the given string */
@@ -743,9 +778,7 @@ int snd_card_register(struct snd_card *card)
 
 EXPORT_SYMBOL(snd_card_register);
 
-#ifdef CONFIG_PROC_FS
-static struct snd_info_entry *snd_card_info_entry;
-
+#ifdef CONFIG_SND_PROC_FS
 static void snd_card_info_read(struct snd_info_entry *entry,
 			       struct snd_info_buffer *buffer)
 {
@@ -771,7 +804,6 @@ static void snd_card_info_read(struct snd_info_entry *entry,
 }
 
 #ifdef CONFIG_SND_OSSEMUL
-
 void snd_card_info_read_oss(struct snd_info_buffer *buffer)
 {
 	int idx, count;
@@ -793,7 +825,6 @@ void snd_card_info_read_oss(struct snd_info_buffer *buffer)
 #endif
 
 #ifdef MODULE
-static struct snd_info_entry *snd_card_module_info_entry;
 static void snd_card_module_info_read(struct snd_info_entry *entry,
 				      struct snd_info_buffer *buffer)
 {
@@ -818,36 +849,21 @@ int __init snd_card_info_init(void)
 	if (! entry)
 		return -ENOMEM;
 	entry->c.text.read = snd_card_info_read;
-	if (snd_info_register(entry) < 0) {
-		snd_info_free_entry(entry);
-		return -ENOMEM;
-	}
-	snd_card_info_entry = entry;
+	if (snd_info_register(entry) < 0)
+		return -ENOMEM; /* freed in error path */
 
 #ifdef MODULE
 	entry = snd_info_create_module_entry(THIS_MODULE, "modules", NULL);
-	if (entry) {
-		entry->c.text.read = snd_card_module_info_read;
-		if (snd_info_register(entry) < 0)
-			snd_info_free_entry(entry);
-		else
-			snd_card_module_info_entry = entry;
-	}
+	if (!entry)
+		return -ENOMEM;
+	entry->c.text.read = snd_card_module_info_read;
+	if (snd_info_register(entry) < 0)
+		return -ENOMEM; /* freed in error path */
 #endif
 
 	return 0;
 }
-
-int __exit snd_card_info_done(void)
-{
-	snd_info_free_entry(snd_card_info_entry);
-#ifdef MODULE
-	snd_info_free_entry(snd_card_module_info_entry);
-#endif
-	return 0;
-}
-
-#endif /* CONFIG_PROC_FS */
+#endif /* CONFIG_SND_PROC_FS */
 
 /**
  *  snd_component_add - add a component string

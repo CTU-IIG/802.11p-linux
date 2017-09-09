@@ -1484,13 +1484,11 @@ static int ami_decode_var(struct fb_var_screeninfo *var, struct amifb_par *par,
 		par->xoffset = var->xoffset;
 		par->yoffset = var->yoffset;
 		if (par->vmode & FB_VMODE_YWRAP) {
-			if (par->xoffset || par->yoffset < 0 ||
-			    par->yoffset >= par->vyres)
+			if (par->yoffset >= par->vyres)
 				par->xoffset = par->yoffset = 0;
 		} else {
-			if (par->xoffset < 0 ||
-			    par->xoffset > upx(16 << maxfmode, par->vxres - par->xres) ||
-			    par->yoffset < 0 || par->yoffset > par->vyres - par->yres)
+			if (par->xoffset > upx(16 << maxfmode, par->vxres - par->xres) ||
+			    par->yoffset > par->vyres - par->yres)
 				par->xoffset = par->yoffset = 0;
 		}
 	} else
@@ -2052,7 +2050,7 @@ static void ami_set_sprite(const struct amifb_par *par)
 {
 	copins *copl, *cops;
 	u_short hs, vs, ve;
-	u_long pl, ps, pt;
+	u_long pl, ps;
 	short mx, my;
 
 	cops = copdisplay.list[currentcop][0];
@@ -2078,7 +2076,7 @@ static void ami_set_sprite(const struct amifb_par *par)
 			if (mod2(vs)) {
 				lofsprite[1 << par->crsr.fmode] = spr2hw_ctl(vs, hs, ve);
 				shfsprite[1 << par->crsr.fmode] = spr2hw_ctl(vs + 1, hs, ve + 1);
-				pt = pl; pl = ps; ps = pt;
+				swap(pl, ps);
 			} else {
 				lofsprite[1 << par->crsr.fmode] = spr2hw_ctl(vs, hs, ve + 1);
 				shfsprite[1 << par->crsr.fmode] = spr2hw_ctl(vs + 1, hs, ve);
@@ -3705,8 +3703,8 @@ default_chipset:
 	 * access the videomem with writethrough cache
 	 */
 	info->fix.smem_start = (u_long)ZTWO_PADDR(videomemory);
-	videomemory = (u_long)ioremap_writethrough(info->fix.smem_start,
-						   info->fix.smem_len);
+	videomemory = (u_long)ioremap_wt(info->fix.smem_start,
+					 info->fix.smem_len);
 	if (!videomemory) {
 		dev_warn(&pdev->dev,
 			 "Unable to map videomem cached writethrough\n");

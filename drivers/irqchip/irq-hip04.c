@@ -41,6 +41,7 @@
 #include <linux/irqdomain.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
+#include <linux/irqchip.h>
 #include <linux/irqchip/arm-gic.h>
 
 #include <asm/irq.h>
@@ -48,7 +49,6 @@
 #include <asm/smp_plat.h>
 
 #include "irq-gic-common.h"
-#include "irqchip.h"
 
 #define HIP04_MAX_IRQS		510
 
@@ -120,21 +120,24 @@ static int hip04_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	void __iomem *base = hip04_dist_base(d);
 	unsigned int irq = hip04_irq(d);
+	int ret;
 
 	/* Interrupt configuration for SGIs can't be changed */
 	if (irq < 16)
 		return -EINVAL;
 
-	if (type != IRQ_TYPE_LEVEL_HIGH && type != IRQ_TYPE_EDGE_RISING)
+	/* SPIs have restrictions on the supported types */
+	if (irq >= 32 && type != IRQ_TYPE_LEVEL_HIGH &&
+			 type != IRQ_TYPE_EDGE_RISING)
 		return -EINVAL;
 
 	raw_spin_lock(&irq_controller_lock);
 
-	gic_configure_irq(irq, type, base, NULL);
+	ret = gic_configure_irq(irq, type, base, NULL);
 
 	raw_spin_unlock(&irq_controller_lock);
 
-	return 0;
+	return ret;
 }
 
 #ifdef CONFIG_SMP
@@ -199,6 +202,9 @@ static struct irq_chip hip04_irq_chip = {
 #ifdef CONFIG_SMP
 	.irq_set_affinity	= hip04_irq_set_affinity,
 #endif
+	.flags			= IRQCHIP_SET_TYPE_MASKED |
+				  IRQCHIP_SKIP_SET_WAKE |
+				  IRQCHIP_MASK_ON_SUSPEND,
 };
 
 static u16 hip04_get_cpumask(struct hip04_irq_data *intc)
@@ -301,11 +307,11 @@ static int hip04_irq_domain_map(struct irq_domain *d, unsigned int irq,
 		irq_set_percpu_devid(irq);
 		irq_set_chip_and_handler(irq, &hip04_irq_chip,
 					 handle_percpu_devid_irq);
-		set_irq_flags(irq, IRQF_VALID | IRQF_NOAUTOEN);
+		irq_set_status_flags(irq, IRQ_NOAUTOEN);
 	} else {
 		irq_set_chip_and_handler(irq, &hip04_irq_chip,
 					 handle_fasteoi_irq);
-		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		irq_set_probe(irq);
 	}
 	irq_set_chip_data(irq, d->host_data);
 	return 0;
@@ -319,7 +325,7 @@ static int hip04_irq_domain_xlate(struct irq_domain *d,
 {
 	unsigned long ret = 0;
 
-	if (d->of_node != controller)
+	if (irq_domain_get_of_node(d) != controller)
 		return -EINVAL;
 	if (intsize < 3)
 		return -EINVAL;
@@ -336,25 +342,11 @@ static int hip04_irq_domain_xlate(struct irq_domain *d,
 	return ret;
 }
 
-#ifdef CONFIG_SMP
-static int hip04_irq_secondary_init(struct notifier_block *nfb,
-				    unsigned long action,
-				    void *hcpu)
+static int hip04_irq_starting_cpu(unsigned int cpu)
 {
-	if (action == CPU_STARTING || action == CPU_STARTING_FROZEN)
-		hip04_irq_cpu_init(&hip04_data);
-	return NOTIFY_OK;
+	hip04_irq_cpu_init(&hip04_data);
+	return 0;
 }
-
-/*
- * Notifier for enabling the INTC CPU interface. Set an arbitrarily high
- * priority because the GIC needs to be up before the ARM generic timers.
- */
-static struct notifier_block hip04_irq_cpu_notifier = {
-	.notifier_call	= hip04_irq_secondary_init,
-	.priority	= 100,
-};
-#endif
 
 static const struct irq_domain_ops hip04_irq_domain_ops = {
 	.map	= hip04_irq_domain_map,
@@ -381,7 +373,7 @@ hip04_of_init(struct device_node *node, struct device_node *parent)
 	 * It will be refined as each CPU probes its ID.
 	 */
 	for (i = 0; i < NR_HIP04_CPU_IF; i++)
-		hip04_cpu_map[i] = 0xff;
+		hip04_cpu_map[i] = 0xffff;
 
 	/*
 	 * Find out how many interrupts are supported.
@@ -396,7 +388,7 @@ hip04_of_init(struct device_node *node, struct device_node *parent)
 	nr_irqs -= hwirq_base; /* calculate # of irqs to allocate */
 
 	irq_base = irq_alloc_descs(-1, hwirq_base, nr_irqs, numa_node_id());
-	if (IS_ERR_VALUE(irq_base)) {
+	if (irq_base < 0) {
 		pr_err("failed to allocate IRQ numbers\n");
 		return -EINVAL;
 	}
@@ -411,13 +403,12 @@ hip04_of_init(struct device_node *node, struct device_node *parent)
 
 #ifdef CONFIG_SMP
 	set_smp_cross_call(hip04_raise_softirq);
-	register_cpu_notifier(&hip04_irq_cpu_notifier);
 #endif
 	set_handle_irq(hip04_handle_irq);
 
 	hip04_irq_dist_init(&hip04_data);
-	hip04_irq_cpu_init(&hip04_data);
-
+	cpuhp_setup_state(CPUHP_AP_IRQ_HIP04_STARTING, "irqchip/hip04:starting",
+			  hip04_irq_starting_cpu, NULL);
 	return 0;
 }
 IRQCHIP_DECLARE(hip04_intc, "hisilicon,hip04-intc", hip04_of_init);

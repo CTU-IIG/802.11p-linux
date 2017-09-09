@@ -7,8 +7,7 @@
  * published by the Free Software Foundation.
  */
 /dts-v1/;
-#include "stih407-clock.dtsi"
-#include "stih407-family.dtsi"
+#include "stih407.dtsi"
 #include "stihxxx-b2120.dtsi"
 / {
 	model = "STiH407 B2120";
@@ -26,6 +25,7 @@
 
 	aliases {
 		ttyAS0 = &sbc_serial0;
+		ethernet0 = &ethernet0;
 	};
 
 };

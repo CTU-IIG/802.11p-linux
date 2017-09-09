@@ -9,7 +9,9 @@
  * I hate traps on the sparc, grrr...
  */
 
-#include <linux/sched.h>  /* for jiffies */
+#include <linux/sched/mm.h>
+#include <linux/sched/debug.h>
+#include <linux/mm_types.h>
 #include <linux/kernel.h>
 #include <linux/signal.h>
 #include <linux/smp.h>
@@ -433,7 +435,6 @@ void trap_init(void)
 	/* Force linker to barf if mismatched */
 	if (TI_UWINMASK    != offsetof(struct thread_info, uwinmask) ||
 	    TI_TASK        != offsetof(struct thread_info, task) ||
-	    TI_EXECDOMAIN  != offsetof(struct thread_info, exec_domain) ||
 	    TI_FLAGS       != offsetof(struct thread_info, flags) ||
 	    TI_CPU         != offsetof(struct thread_info, cpu) ||
 	    TI_PREEMPT     != offsetof(struct thread_info, preempt_count) ||
@@ -449,7 +450,7 @@ void trap_init(void)
 		thread_info_offsets_are_bolixed_pete();
 
 	/* Attach to the address space of init_task. */
-	atomic_inc(&init_mm.mm_count);
+	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
 
 	/* NOTE: Other cpus have this done as they are started

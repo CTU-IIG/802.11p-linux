@@ -123,25 +123,21 @@ static int spi_execute(struct scsi_device *sdev, const void *cmd,
 {
 	int i, result;
 	unsigned char sense[SCSI_SENSE_BUFFERSIZE];
+	struct scsi_sense_hdr sshdr_tmp;
+
+	if (!sshdr)
+		sshdr = &sshdr_tmp;
 
 	for(i = 0; i < DV_RETRIES; i++) {
-		result = scsi_execute(sdev, cmd, dir, buffer, bufflen,
-				      sense, DV_TIMEOUT, /* retries */ 1,
+		result = scsi_execute(sdev, cmd, dir, buffer, bufflen, sense,
+				      sshdr, DV_TIMEOUT, /* retries */ 1,
 				      REQ_FAILFAST_DEV |
 				      REQ_FAILFAST_TRANSPORT |
 				      REQ_FAILFAST_DRIVER,
-				      NULL);
-		if (driver_byte(result) & DRIVER_SENSE) {
-			struct scsi_sense_hdr sshdr_tmp;
-			if (!sshdr)
-				sshdr = &sshdr_tmp;
-
-			if (scsi_normalize_sense(sense, SCSI_SENSE_BUFFERSIZE,
-						 sshdr)
-			    && sshdr->sense_key == UNIT_ATTENTION)
-				continue;
-		}
-		break;
+				      0, NULL);
+		if (!(driver_byte(result) & DRIVER_SENSE) ||
+		    sshdr->sense_key != UNIT_ATTENTION)
+			break;
 	}
 	return result;
 }
@@ -786,10 +782,10 @@ spi_dv_retrain(struct scsi_device *sdev, u8 *buffer, u8 *ptr,
 		 * IU, then QAS (if we can control them), then finally
 		 * fall down the periods */
 		if (i->f->set_iu && spi_iu(starget)) {
-			starget_printk(KERN_ERR, starget, "Domain Validation Disabing Information Units\n");
+			starget_printk(KERN_ERR, starget, "Domain Validation Disabling Information Units\n");
 			DV_SET(iu, 0);
 		} else if (i->f->set_qas && spi_qas(starget)) {
-			starget_printk(KERN_ERR, starget, "Domain Validation Disabing Quick Arbitration and Selection\n");
+			starget_printk(KERN_ERR, starget, "Domain Validation Disabling Quick Arbitration and Selection\n");
 			DV_SET(qas, 0);
 		} else {
 			newperiod = spi_period(starget);
@@ -1221,7 +1217,7 @@ EXPORT_SYMBOL_GPL(spi_populate_ppr_msg);
 int spi_populate_tag_msg(unsigned char *msg, struct scsi_cmnd *cmd)
 {
         if (cmd->flags & SCMD_TAGGED) {
-		*msg++ = MSG_SIMPLE_TAG;
+		*msg++ = SIMPLE_QUEUE_TAG;
         	*msg++ = cmd->request->tag;
         	return 2;
 	}

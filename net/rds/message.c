@@ -41,6 +41,8 @@ static unsigned int	rds_exthdr_size[__RDS_EXTHDR_MAX] = {
 [RDS_EXTHDR_VERSION]	= sizeof(struct rds_ext_header_version),
 [RDS_EXTHDR_RDMA]	= sizeof(struct rds_ext_header_rdma),
 [RDS_EXTHDR_RDMA_DEST]	= sizeof(struct rds_ext_header_rdma_dest),
+[RDS_EXTHDR_NPATHS]	= sizeof(u16),
+[RDS_EXTHDR_GEN_NUM]	= sizeof(u32),
 };
 
 
@@ -266,7 +268,7 @@ struct rds_message *rds_message_map_pages(unsigned long *page_addrs, unsigned in
 
 int rds_message_copy_from_user(struct rds_message *rm, struct iov_iter *from)
 {
-	unsigned long to_copy;
+	unsigned long to_copy, nbytes;
 	unsigned long sg_off;
 	struct scatterlist *sg;
 	int ret = 0;
@@ -293,9 +295,9 @@ int rds_message_copy_from_user(struct rds_message *rm, struct iov_iter *from)
 				sg->length - sg_off);
 
 		rds_stats_add(s_copy_from_user, to_copy);
-		ret = copy_page_from_iter(sg_page(sg), sg->offset + sg_off,
-					  to_copy, from);
-		if (ret != to_copy)
+		nbytes = copy_page_from_iter(sg_page(sg), sg->offset + sg_off,
+					     to_copy, from);
+		if (nbytes != to_copy)
 			return -EFAULT;
 
 		sg_off += to_copy;
@@ -325,7 +327,8 @@ int rds_message_inc_copy_to_user(struct rds_incoming *inc, struct iov_iter *to)
 	copied = 0;
 
 	while (iov_iter_count(to) && copied < len) {
-		to_copy = min(iov_iter_count(to), sg->length - vec_off);
+		to_copy = min_t(unsigned long, iov_iter_count(to),
+				sg->length - vec_off);
 		to_copy = min_t(unsigned long, to_copy, len - copied);
 
 		rds_stats_add(s_copy_to_user, to_copy);

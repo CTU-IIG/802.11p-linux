@@ -45,11 +45,10 @@ struct sh_msiof_spi_priv {
 	void __iomem *mapbase;
 	struct clk *clk;
 	struct platform_device *pdev;
-	const struct sh_msiof_chipdata *chipdata;
 	struct sh_msiof_spi_info *info;
 	struct completion done;
-	int tx_fifo_size;
-	int rx_fifo_size;
+	unsigned int tx_fifo_size;
+	unsigned int rx_fifo_size;
 	void *tx_dma_page;
 	void *rx_dma_page;
 	dma_addr_t tx_dma_addr;
@@ -82,7 +81,9 @@ struct sh_msiof_spi_priv {
 #define MDR1_SYNCMD_LR	 0x30000000 /*   L/R mode */
 #define MDR1_SYNCAC_SHIFT	 25 /* Sync Polarity (1 = Active-low) */
 #define MDR1_BITLSB_SHIFT	 24 /* MSB/LSB First (1 = LSB first) */
-#define MDR1_FLD_MASK	 0x000000c0 /* Frame Sync Signal Interval (0-3) */
+#define MDR1_DTDL_SHIFT		 20 /* Data Pin Bit Delay for MSIOF_SYNC */
+#define MDR1_SYNCDL_SHIFT	 16 /* Frame Sync Signal Timing Delay */
+#define MDR1_FLD_MASK	 0x0000000c /* Frame Sync Signal Interval (0-3) */
 #define MDR1_FLD_SHIFT		  2
 #define MDR1_XXSTP	 0x00000001 /* Transmission/Reception Stop on FIFO */
 /* TMDR1 */
@@ -92,8 +93,6 @@ struct sh_msiof_spi_priv {
 #define MDR2_BITLEN1(i)	(((i) - 1) << 24) /* Data Size (8-32 bits) */
 #define MDR2_WDLEN1(i)	(((i) - 1) << 16) /* Word Count (1-64/256 (SH, A1))) */
 #define MDR2_GRPMASK1	0x00000001 /* Group Output Mask 1 (SH, A1) */
-
-#define MAX_WDLEN	256U
 
 /* TSCR and RSCR */
 #define SCR_BRPS_MASK	    0x1f00 /* Prescaler Setting (1-32) */
@@ -241,42 +240,83 @@ static irqreturn_t sh_msiof_spi_irq(int irq, void *data)
 
 static struct {
 	unsigned short div;
-	unsigned short scr;
-} const sh_msiof_spi_clk_table[] = {
-	{ 1,	SCR_BRPS( 1) | SCR_BRDV_DIV_1 },
-	{ 2,	SCR_BRPS( 1) | SCR_BRDV_DIV_2 },
-	{ 4,	SCR_BRPS( 1) | SCR_BRDV_DIV_4 },
-	{ 8,	SCR_BRPS( 1) | SCR_BRDV_DIV_8 },
-	{ 16,	SCR_BRPS( 1) | SCR_BRDV_DIV_16 },
-	{ 32,	SCR_BRPS( 1) | SCR_BRDV_DIV_32 },
-	{ 64,	SCR_BRPS(32) | SCR_BRDV_DIV_2 },
-	{ 128,	SCR_BRPS(32) | SCR_BRDV_DIV_4 },
-	{ 256,	SCR_BRPS(32) | SCR_BRDV_DIV_8 },
-	{ 512,	SCR_BRPS(32) | SCR_BRDV_DIV_16 },
-	{ 1024,	SCR_BRPS(32) | SCR_BRDV_DIV_32 },
+	unsigned short brdv;
+} const sh_msiof_spi_div_table[] = {
+	{ 1,	SCR_BRDV_DIV_1 },
+	{ 2,	SCR_BRDV_DIV_2 },
+	{ 4,	SCR_BRDV_DIV_4 },
+	{ 8,	SCR_BRDV_DIV_8 },
+	{ 16,	SCR_BRDV_DIV_16 },
+	{ 32,	SCR_BRDV_DIV_32 },
 };
 
 static void sh_msiof_spi_set_clk_regs(struct sh_msiof_spi_priv *p,
 				      unsigned long parent_rate, u32 spi_hz)
 {
 	unsigned long div = 1024;
+	u32 brps, scr;
 	size_t k;
 
 	if (!WARN_ON(!spi_hz || !parent_rate))
 		div = DIV_ROUND_UP(parent_rate, spi_hz);
 
-	/* TODO: make more fine grained */
-
-	for (k = 0; k < ARRAY_SIZE(sh_msiof_spi_clk_table); k++) {
-		if (sh_msiof_spi_clk_table[k].div >= div)
+	for (k = 0; k < ARRAY_SIZE(sh_msiof_spi_div_table); k++) {
+		brps = DIV_ROUND_UP(div, sh_msiof_spi_div_table[k].div);
+		/* SCR_BRDV_DIV_1 is valid only if BRPS is x 1/1 or x 1/2 */
+		if (sh_msiof_spi_div_table[k].div == 1 && brps > 2)
+			continue;
+		if (brps <= 32) /* max of brdv is 32 */
 			break;
 	}
 
-	k = min_t(int, k, ARRAY_SIZE(sh_msiof_spi_clk_table) - 1);
+	k = min_t(int, k, ARRAY_SIZE(sh_msiof_spi_div_table) - 1);
 
-	sh_msiof_write(p, TSCR, sh_msiof_spi_clk_table[k].scr);
-	if (!(p->chipdata->master_flags & SPI_MASTER_MUST_TX))
-		sh_msiof_write(p, RSCR, sh_msiof_spi_clk_table[k].scr);
+	scr = sh_msiof_spi_div_table[k].brdv | SCR_BRPS(brps);
+	sh_msiof_write(p, TSCR, scr);
+	if (!(p->master->flags & SPI_MASTER_MUST_TX))
+		sh_msiof_write(p, RSCR, scr);
+}
+
+static u32 sh_msiof_get_delay_bit(u32 dtdl_or_syncdl)
+{
+	/*
+	 * DTDL/SYNCDL bit	: p->info->dtdl or p->info->syncdl
+	 * b'000		: 0
+	 * b'001		: 100
+	 * b'010		: 200
+	 * b'011 (SYNCDL only)	: 300
+	 * b'101		: 50
+	 * b'110		: 150
+	 */
+	if (dtdl_or_syncdl % 100)
+		return dtdl_or_syncdl / 100 + 5;
+	else
+		return dtdl_or_syncdl / 100;
+}
+
+static u32 sh_msiof_spi_get_dtdl_and_syncdl(struct sh_msiof_spi_priv *p)
+{
+	u32 val;
+
+	if (!p->info)
+		return 0;
+
+	/* check if DTDL and SYNCDL is allowed value */
+	if (p->info->dtdl > 200 || p->info->syncdl > 300) {
+		dev_warn(&p->pdev->dev, "DTDL or SYNCDL is too large\n");
+		return 0;
+	}
+
+	/* check if the sum of DTDL and SYNCDL becomes an integer value  */
+	if ((p->info->dtdl + p->info->syncdl) % 100) {
+		dev_warn(&p->pdev->dev, "the sum of DTDL/SYNCDL is not good\n");
+		return 0;
+	}
+
+	val = sh_msiof_get_delay_bit(p->info->dtdl) << MDR1_DTDL_SHIFT;
+	val |= sh_msiof_get_delay_bit(p->info->syncdl) << MDR1_SYNCDL_SHIFT;
+
+	return val;
 }
 
 static void sh_msiof_spi_set_pin_regs(struct sh_msiof_spi_priv *p,
@@ -296,8 +336,9 @@ static void sh_msiof_spi_set_pin_regs(struct sh_msiof_spi_priv *p,
 	tmp = MDR1_SYNCMD_SPI | 1 << MDR1_FLD_SHIFT | MDR1_XXSTP;
 	tmp |= !cs_high << MDR1_SYNCAC_SHIFT;
 	tmp |= lsb_first << MDR1_BITLSB_SHIFT;
+	tmp |= sh_msiof_spi_get_dtdl_and_syncdl(p);
 	sh_msiof_write(p, TMDR1, tmp | MDR1_TRMD | TMDR1_PCON);
-	if (p->chipdata->master_flags & SPI_MASTER_MUST_TX) {
+	if (p->master->flags & SPI_MASTER_MUST_TX) {
 		/* These bits are reserved if RX needs TX */
 		tmp &= ~0x0000ffff;
 	}
@@ -321,7 +362,7 @@ static void sh_msiof_spi_set_mode_regs(struct sh_msiof_spi_priv *p,
 {
 	u32 dr2 = MDR2_BITLEN1(bits) | MDR2_WDLEN1(words);
 
-	if (tx_buf || (p->chipdata->master_flags & SPI_MASTER_MUST_TX))
+	if (tx_buf || (p->master->flags & SPI_MASTER_MUST_TX))
 		sh_msiof_write(p, TMDR2, dr2);
 	else
 		sh_msiof_write(p, TMDR2, dr2 | MDR2_GRPMASK1);
@@ -480,6 +521,8 @@ static int sh_msiof_spi_setup(struct spi_device *spi)
 	struct device_node	*np = spi->master->dev.of_node;
 	struct sh_msiof_spi_priv *p = spi_master_get_devdata(spi->master);
 
+	pm_runtime_get_sync(&p->pdev->dev);
+
 	if (!np) {
 		/*
 		 * Use spi->controller_data for CS (same strategy as spi_gpio),
@@ -497,6 +540,9 @@ static int sh_msiof_spi_setup(struct spi_device *spi)
 
 	if (spi->cs_gpio >= 0)
 		gpio_set_value(spi->cs_gpio, !(spi->mode & SPI_CS_HIGH));
+
+
+	pm_runtime_put(&p->pdev->dev);
 
 	return 0;
 }
@@ -590,8 +636,7 @@ static int sh_msiof_spi_txrx_once(struct sh_msiof_spi_priv *p,
 	}
 
 	/* wait for tx fifo to be emptied / rx fifo to be filled */
-	ret = wait_for_completion_timeout(&p->done, HZ);
-	if (!ret) {
+	if (!wait_for_completion_timeout(&p->done, HZ)) {
 		dev_err(&p->pdev->dev, "PIO timeout\n");
 		ret = -ETIMEDOUT;
 		goto stop_reset;
@@ -701,8 +746,7 @@ static int sh_msiof_dma_once(struct sh_msiof_spi_priv *p, const void *tx,
 	}
 
 	/* wait for tx fifo to be emptied / rx fifo to be filled */
-	ret = wait_for_completion_timeout(&p->done, HZ);
-	if (!ret) {
+	if (!wait_for_completion_timeout(&p->done, HZ)) {
 		dev_err(&p->pdev->dev, "DMA timeout\n");
 		ret = -ETIMEDOUT;
 		goto stop_reset;
@@ -806,7 +850,12 @@ static int sh_msiof_transfer_one(struct spi_master *master,
 		 *  DMA supports 32-bit words only, hence pack 8-bit and 16-bit
 		 *  words, with byte resp. word swapping.
 		 */
-		unsigned int l = min(len, MAX_WDLEN * 4);
+		unsigned int l = 0;
+
+		if (tx_buf)
+			l = min(len, p->tx_fifo_size * 4);
+		if (rx_buf)
+			l = min(len, p->rx_fifo_size * 4);
 
 		if (bits <= 8) {
 			if (l & 3)
@@ -919,18 +968,21 @@ static const struct sh_msiof_chipdata sh_data = {
 
 static const struct sh_msiof_chipdata r8a779x_data = {
 	.tx_fifo_size = 64,
-	.rx_fifo_size = 256,
+	.rx_fifo_size = 64,
 	.master_flags = SPI_MASTER_MUST_TX,
 };
 
 static const struct of_device_id sh_msiof_match[] = {
-	{ .compatible = "renesas,sh-msiof",        .data = &sh_data },
 	{ .compatible = "renesas,sh-mobile-msiof", .data = &sh_data },
 	{ .compatible = "renesas,msiof-r8a7790",   .data = &r8a779x_data },
 	{ .compatible = "renesas,msiof-r8a7791",   .data = &r8a779x_data },
 	{ .compatible = "renesas,msiof-r8a7792",   .data = &r8a779x_data },
 	{ .compatible = "renesas,msiof-r8a7793",   .data = &r8a779x_data },
 	{ .compatible = "renesas,msiof-r8a7794",   .data = &r8a779x_data },
+	{ .compatible = "renesas,rcar-gen2-msiof", .data = &r8a779x_data },
+	{ .compatible = "renesas,msiof-r8a7796",   .data = &r8a779x_data },
+	{ .compatible = "renesas,rcar-gen3-msiof", .data = &r8a779x_data },
+	{ .compatible = "renesas,sh-msiof",        .data = &sh_data }, /* Deprecated */
 	{},
 };
 MODULE_DEVICE_TABLE(of, sh_msiof_match);
@@ -952,6 +1004,8 @@ static struct sh_msiof_spi_info *sh_msiof_spi_parse_dt(struct device *dev)
 					&info->tx_fifo_override);
 	of_property_read_u32(np, "renesas,rx-fifo-size",
 					&info->rx_fifo_override);
+	of_property_read_u32(np, "renesas,dtdl", &info->dtdl);
+	of_property_read_u32(np, "renesas,syncdl", &info->syncdl);
 
 	info->num_chipselect = num_cs;
 
@@ -984,7 +1038,6 @@ static struct dma_chan *sh_msiof_request_dma_chan(struct device *dev,
 	}
 
 	memset(&cfg, 0, sizeof(cfg));
-	cfg.slave_id = id;
 	cfg.direction = dir;
 	if (dir == DMA_MEM_TO_DEV) {
 		cfg.dst_addr = port_addr;
@@ -1104,16 +1157,15 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 {
 	struct resource	*r;
 	struct spi_master *master;
+	const struct sh_msiof_chipdata *chipdata;
 	const struct of_device_id *of_id;
 	struct sh_msiof_spi_priv *p;
 	int i;
 	int ret;
 
 	master = spi_alloc_master(&pdev->dev, sizeof(struct sh_msiof_spi_priv));
-	if (master == NULL) {
-		dev_err(&pdev->dev, "failed to allocate spi master\n");
+	if (master == NULL)
 		return -ENOMEM;
-	}
 
 	p = spi_master_get_devdata(master);
 
@@ -1122,10 +1174,10 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 
 	of_id = of_match_device(sh_msiof_match, &pdev->dev);
 	if (of_id) {
-		p->chipdata = of_id->data;
+		chipdata = of_id->data;
 		p->info = sh_msiof_spi_parse_dt(&pdev->dev);
 	} else {
-		p->chipdata = (const void *)pdev->id_entry->driver_data;
+		chipdata = (const void *)pdev->id_entry->driver_data;
 		p->info = dev_get_platdata(&pdev->dev);
 	}
 
@@ -1169,8 +1221,8 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 
 	/* Platform data may override FIFO sizes */
-	p->tx_fifo_size = p->chipdata->tx_fifo_size;
-	p->rx_fifo_size = p->chipdata->rx_fifo_size;
+	p->tx_fifo_size = chipdata->tx_fifo_size;
+	p->rx_fifo_size = chipdata->rx_fifo_size;
 	if (p->info->tx_fifo_override)
 		p->tx_fifo_size = p->info->tx_fifo_override;
 	if (p->info->rx_fifo_override)
@@ -1179,7 +1231,7 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 	/* init master code */
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
 	master->mode_bits |= SPI_LSB_FIRST | SPI_3WIRE;
-	master->flags = p->chipdata->master_flags;
+	master->flags = chipdata->master_flags;
 	master->bus_num = pdev->id;
 	master->dev.of_node = pdev->dev.of_node;
 	master->num_chipselect = p->info->num_chipselect;
@@ -1218,13 +1270,8 @@ static int sh_msiof_spi_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static struct platform_device_id spi_driver_ids[] = {
+static const struct platform_device_id spi_driver_ids[] = {
 	{ "spi_sh_msiof",	(kernel_ulong_t)&sh_data },
-	{ "spi_r8a7790_msiof",	(kernel_ulong_t)&r8a779x_data },
-	{ "spi_r8a7791_msiof",	(kernel_ulong_t)&r8a779x_data },
-	{ "spi_r8a7792_msiof",	(kernel_ulong_t)&r8a779x_data },
-	{ "spi_r8a7793_msiof",	(kernel_ulong_t)&r8a779x_data },
-	{ "spi_r8a7794_msiof",	(kernel_ulong_t)&r8a779x_data },
 	{},
 };
 MODULE_DEVICE_TABLE(platform, spi_driver_ids);

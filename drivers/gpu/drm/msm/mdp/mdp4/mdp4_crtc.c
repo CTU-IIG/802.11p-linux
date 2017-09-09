@@ -51,6 +51,11 @@ struct mdp4_crtc {
 	/* if there is a pending flip, these will be non-null: */
 	struct drm_pending_vblank_event *event;
 
+	/* Bits have been flushed at the last commit,
+	 * used to decide if a vsync has happened since last commit.
+	 */
+	u32 flushed_mask;
+
 #define PENDING_CURSOR 0x1
 #define PENDING_FLIP   0x2
 	atomic_t pending;
@@ -93,6 +98,8 @@ static void crtc_flush(struct drm_crtc *crtc)
 
 	DBG("%s: flush=%08x", mdp4_crtc->name, flush);
 
+	mdp4_crtc->flushed_mask = flush;
+
 	mdp4_write(mdp4_kms, REG_MDP4_OVERLAY_FLUSH, flush);
 }
 
@@ -114,7 +121,7 @@ static void complete_flip(struct drm_crtc *crtc, struct drm_file *file)
 		if (!file || (event->base.file_priv == file)) {
 			mdp4_crtc->event = NULL;
 			DBG("%s: send event: %p", mdp4_crtc->name, event);
-			drm_send_vblank_event(dev, mdp4_crtc->id, event);
+			drm_crtc_send_vblank_event(crtc, event);
 		}
 	}
 	spin_unlock_irqrestore(&dev->event_lock, flags);
@@ -138,33 +145,6 @@ static void mdp4_crtc_destroy(struct drm_crtc *crtc)
 	drm_flip_work_cleanup(&mdp4_crtc->unref_cursor_work);
 
 	kfree(mdp4_crtc);
-}
-
-static void mdp4_crtc_dpms(struct drm_crtc *crtc, int mode)
-{
-	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
-	struct mdp4_kms *mdp4_kms = get_kms(crtc);
-	bool enabled = (mode == DRM_MODE_DPMS_ON);
-
-	DBG("%s: mode=%d", mdp4_crtc->name, mode);
-
-	if (enabled != mdp4_crtc->enabled) {
-		if (enabled) {
-			mdp4_enable(mdp4_kms);
-			mdp_irq_register(&mdp4_kms->base, &mdp4_crtc->err);
-		} else {
-			mdp_irq_unregister(&mdp4_kms->base, &mdp4_crtc->err);
-			mdp4_disable(mdp4_kms);
-		}
-		mdp4_crtc->enabled = enabled;
-	}
-}
-
-static bool mdp4_crtc_mode_fixup(struct drm_crtc *crtc,
-		const struct drm_display_mode *mode,
-		struct drm_display_mode *adjusted_mode)
-{
-	return true;
 }
 
 /* statically (for now) map planes to mixer stage (z-order): */
@@ -304,60 +284,64 @@ static void mdp4_crtc_mode_set_nofb(struct drm_crtc *crtc)
 	}
 }
 
-static void mdp4_crtc_prepare(struct drm_crtc *crtc)
+static void mdp4_crtc_disable(struct drm_crtc *crtc)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
+	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+
 	DBG("%s", mdp4_crtc->name);
-	/* make sure we hold a ref to mdp clks while setting up mode: */
-	drm_crtc_vblank_get(crtc);
-	mdp4_enable(get_kms(crtc));
-	mdp4_crtc_dpms(crtc, DRM_MODE_DPMS_OFF);
+
+	if (WARN_ON(!mdp4_crtc->enabled))
+		return;
+
+	mdp_irq_unregister(&mdp4_kms->base, &mdp4_crtc->err);
+	mdp4_disable(mdp4_kms);
+
+	mdp4_crtc->enabled = false;
 }
 
-static void mdp4_crtc_commit(struct drm_crtc *crtc)
+static void mdp4_crtc_enable(struct drm_crtc *crtc)
 {
-	mdp4_crtc_dpms(crtc, DRM_MODE_DPMS_ON);
+	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
+	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+
+	DBG("%s", mdp4_crtc->name);
+
+	if (WARN_ON(mdp4_crtc->enabled))
+		return;
+
+	mdp4_enable(mdp4_kms);
+	mdp_irq_register(&mdp4_kms->base, &mdp4_crtc->err);
+
 	crtc_flush(crtc);
-	/* drop the ref to mdp clk's that we got in prepare: */
-	mdp4_disable(get_kms(crtc));
-	drm_crtc_vblank_put(crtc);
-}
 
-static void mdp4_crtc_load_lut(struct drm_crtc *crtc)
-{
+	mdp4_crtc->enabled = true;
 }
 
 static int mdp4_crtc_atomic_check(struct drm_crtc *crtc,
 		struct drm_crtc_state *state)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
-	struct drm_device *dev = crtc->dev;
-
 	DBG("%s: check", mdp4_crtc->name);
-
-	if (mdp4_crtc->event) {
-		dev_err(dev->dev, "already pending flip!\n");
-		return -EBUSY;
-	}
-
 	// TODO anything else to check?
-
 	return 0;
 }
 
-static void mdp4_crtc_atomic_begin(struct drm_crtc *crtc)
+static void mdp4_crtc_atomic_begin(struct drm_crtc *crtc,
+				   struct drm_crtc_state *old_crtc_state)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	DBG("%s: begin", mdp4_crtc->name);
 }
 
-static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc)
+static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc,
+				   struct drm_crtc_state *old_crtc_state)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
 	unsigned long flags;
 
-	DBG("%s: flush", mdp4_crtc->name);
+	DBG("%s: event: %p", mdp4_crtc->name, crtc->state->event);
 
 	WARN_ON(mdp4_crtc->event);
 
@@ -368,13 +352,6 @@ static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc)
 	blend_setup(crtc);
 	crtc_flush(crtc);
 	request_pending(crtc, PENDING_FLIP);
-}
-
-static int mdp4_crtc_set_property(struct drm_crtc *crtc,
-		struct drm_property *property, uint64_t val)
-{
-	// XXX
-	return -EINVAL;
 }
 
 #define CURSOR_WIDTH 64
@@ -396,7 +373,7 @@ static void update_cursor(struct drm_crtc *crtc)
 	if (mdp4_crtc->cursor.stale) {
 		struct drm_gem_object *next_bo = mdp4_crtc->cursor.next_bo;
 		struct drm_gem_object *prev_bo = mdp4_crtc->cursor.scanout_bo;
-		uint32_t iova = mdp4_crtc->cursor.next_iova;
+		uint64_t iova = mdp4_crtc->cursor.next_iova;
 
 		if (next_bo) {
 			/* take a obj ref + iova ref when we start scanning out: */
@@ -441,7 +418,7 @@ static int mdp4_crtc_cursor_set(struct drm_crtc *crtc,
 	struct drm_device *dev = crtc->dev;
 	struct drm_gem_object *cursor_bo, *old_bo;
 	unsigned long flags;
-	uint32_t iova;
+	uint64_t iova;
 	int ret;
 
 	if ((width > CURSOR_WIDTH) || (height > CURSOR_HEIGHT)) {
@@ -450,7 +427,7 @@ static int mdp4_crtc_cursor_set(struct drm_crtc *crtc,
 	}
 
 	if (handle) {
-		cursor_bo = drm_gem_object_lookup(dev, file_priv, handle);
+		cursor_bo = drm_gem_object_lookup(file_priv, handle);
 		if (!cursor_bo)
 			return -ENOENT;
 	} else {
@@ -508,7 +485,7 @@ static const struct drm_crtc_funcs mdp4_crtc_funcs = {
 	.set_config = drm_atomic_helper_set_config,
 	.destroy = mdp4_crtc_destroy,
 	.page_flip = drm_atomic_helper_page_flip,
-	.set_property = mdp4_crtc_set_property,
+	.set_property = drm_atomic_helper_crtc_set_property,
 	.cursor_set = mdp4_crtc_cursor_set,
 	.cursor_move = mdp4_crtc_cursor_move,
 	.reset = drm_atomic_helper_crtc_reset,
@@ -517,14 +494,9 @@ static const struct drm_crtc_funcs mdp4_crtc_funcs = {
 };
 
 static const struct drm_crtc_helper_funcs mdp4_crtc_helper_funcs = {
-	.dpms = mdp4_crtc_dpms,
-	.mode_fixup = mdp4_crtc_mode_fixup,
 	.mode_set_nofb = mdp4_crtc_mode_set_nofb,
-	.mode_set = drm_helper_crtc_mode_set,
-	.mode_set_base = drm_helper_crtc_mode_set_base,
-	.prepare = mdp4_crtc_prepare,
-	.commit = mdp4_crtc_commit,
-	.load_lut = mdp4_crtc_load_lut,
+	.disable = mdp4_crtc_disable,
+	.enable = mdp4_crtc_enable,
 	.atomic_check = mdp4_crtc_atomic_check,
 	.atomic_begin = mdp4_crtc_atomic_begin,
 	.atomic_flush = mdp4_crtc_atomic_flush,
@@ -559,17 +531,33 @@ static void mdp4_crtc_err_irq(struct mdp_irq *irq, uint32_t irqstatus)
 	crtc_flush(crtc);
 }
 
+static void mdp4_crtc_wait_for_flush_done(struct drm_crtc *crtc)
+{
+	struct drm_device *dev = crtc->dev;
+	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
+	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	int ret;
+
+	ret = drm_crtc_vblank_get(crtc);
+	if (ret)
+		return;
+
+	ret = wait_event_timeout(dev->vblank[drm_crtc_index(crtc)].queue,
+		!(mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH) &
+			mdp4_crtc->flushed_mask),
+		msecs_to_jiffies(50));
+	if (ret <= 0)
+		dev_warn(dev->dev, "vblank time out, crtc=%d\n", mdp4_crtc->id);
+
+	mdp4_crtc->flushed_mask = 0;
+
+	drm_crtc_vblank_put(crtc);
+}
+
 uint32_t mdp4_crtc_vblank(struct drm_crtc *crtc)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	return mdp4_crtc->vblank.irqmask;
-}
-
-void mdp4_crtc_cancel_pending_flip(struct drm_crtc *crtc, struct drm_file *file)
-{
-	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
-	DBG("%s: cancel: %p", mdp4_crtc->name, file);
-	complete_flip(crtc, file);
 }
 
 /* set dma config, ie. the format the encoder wants. */
@@ -622,6 +610,15 @@ void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf, int mixer)
 	mdp4_write(mdp4_kms, REG_MDP4_DISP_INTF_SEL, intf_sel);
 }
 
+void mdp4_crtc_wait_for_commit_done(struct drm_crtc *crtc)
+{
+	/* wait_for_flush_done is the only case for now.
+	 * Later we will have command mode CRTC to wait for
+	 * other event.
+	 */
+	mdp4_crtc_wait_for_flush_done(crtc);
+}
+
 static const char *dma_names[] = {
 		"DMA_P", "DMA_S", "DMA_E",
 };
@@ -659,11 +656,10 @@ struct drm_crtc *mdp4_crtc_init(struct drm_device *dev,
 	drm_flip_work_init(&mdp4_crtc->unref_cursor_work,
 			"unref cursor", unref_cursor_worker);
 
-	drm_crtc_init_with_planes(dev, crtc, plane, NULL, &mdp4_crtc_funcs);
+	drm_crtc_init_with_planes(dev, crtc, plane, NULL, &mdp4_crtc_funcs,
+				  NULL);
 	drm_crtc_helper_add(crtc, &mdp4_crtc_helper_funcs);
 	plane->crtc = crtc;
-
-	mdp4_plane_install_properties(plane, &crtc->base);
 
 	return crtc;
 }

@@ -20,22 +20,21 @@ config SPARC
 	select HAVE_OPROFILE
 	select HAVE_ARCH_KGDB if !SMP || SPARC64
 	select HAVE_ARCH_TRACEHOOK
+	select HAVE_EXIT_THREAD
 	select SYSCTL_EXCEPTION_TRACE
-	select ARCH_WANT_OPTIONAL_GPIOLIB
-	select ARCH_HAS_ATOMIC64_DEC_IF_POSITIVE
 	select RTC_CLASS
 	select RTC_DRV_M48T59
-	select HAVE_DMA_ATTRS
+	select RTC_SYSTOHC
 	select HAVE_DMA_API_DEBUG
 	select HAVE_ARCH_JUMP_LABEL if SPARC64
 	select GENERIC_IRQ_SHOW
 	select ARCH_WANT_IPC_PARSE_VERSION
 	select GENERIC_PCI_IOMAP
 	select HAVE_NMI_WATCHDOG if SPARC64
-	select HAVE_BPF_JIT
+	select HAVE_CBPF_JIT if SPARC32
+	select HAVE_EBPF_JIT if SPARC64
 	select HAVE_DEBUG_BUGVERBOSE
 	select GENERIC_SMP_IDLE_THREAD
-	select GENERIC_CMOS_UPDATE
 	select GENERIC_CLOCKEVENTS
 	select GENERIC_STRNCPY_FROM_USER
 	select GENERIC_STRNLEN_USER
@@ -43,6 +42,9 @@ config SPARC
 	select ODD_RT_SIGACTION
 	select OLD_SIGSUSPEND
 	select ARCH_HAS_SG_CHAIN
+	select CPU_NO_EFFICIENT_FFS
+	select LOCKDEP_SMALL if LOCKDEP
+	select ARCH_WANT_RELAX_ORDER
 
 config SPARC32
 	def_bool !64BIT
@@ -55,7 +57,6 @@ config SPARC64
 	def_bool 64BIT
 	select HAVE_FUNCTION_TRACER
 	select HAVE_FUNCTION_GRAPH_TRACER
-	select HAVE_FUNCTION_GRAPH_FP_TEST
 	select HAVE_KRETPROBES
 	select HAVE_KPROBES
 	select HAVE_RCU_TABLE_FREE if SMP
@@ -80,11 +81,24 @@ config SPARC64
 	select NO_BOOTMEM
 	select HAVE_ARCH_AUDITSYSCALL
 	select ARCH_SUPPORTS_ATOMIC_RMW
+	select HAVE_NMI
+	select HAVE_REGS_AND_STACK_ACCESS_API
 
 config ARCH_DEFCONFIG
 	string
 	default "arch/sparc/configs/sparc32_defconfig" if SPARC32
 	default "arch/sparc/configs/sparc64_defconfig" if SPARC64
+
+config ARCH_PROC_KCORE_TEXT
+	def_bool y
+
+config ARCH_ATU
+	bool
+	default y if SPARC64
+
+config ARCH_DMA_ADDR_T_64BIT
+	bool
+	default y if ARCH_ATU
 
 config IOMMU_HELPER
 	bool
@@ -95,10 +109,6 @@ config STACKTRACE_SUPPORT
 	default y if SPARC64
 
 config LOCKDEP_SUPPORT
-	bool
-	default y if SPARC64
-
-config HAVE_LATENCYTOP_SUPPORT
 	bool
 	default y if SPARC64
 
@@ -141,6 +151,13 @@ config GENERIC_ISA_DMA
 	default y if SPARC32
 
 config ARCH_SUPPORTS_DEBUG_PAGEALLOC
+	def_bool y if SPARC64
+
+config PGTABLE_LEVELS
+	default 4 if 64BIT
+	default 3
+
+config ARCH_SUPPORTS_UPROBES
 	def_bool y if SPARC64
 
 source "init/Kconfig"
@@ -300,6 +317,20 @@ config ARCH_SPARSEMEM_ENABLE
 
 config ARCH_SPARSEMEM_DEFAULT
 	def_bool y if SPARC64
+
+config FORCE_MAX_ZONEORDER
+	int "Maximum zone order"
+	default "13"
+	help
+	  The kernel memory allocator divides physically contiguous memory
+	  blocks into "zones", where each zone is a power of two number of
+	  pages.  This option selects the largest power of two that the kernel
+	  keeps in the memory allocator.  If you need to allocate very large
+	  blocks of physically contiguous memory, then you may need to
+	  increase this value.
+
+	  This config option is actually maximum order plus one. For example,
+	  a value of 13 means that the largest free memory block is 2^12 pages.
 
 source "mm/Kconfig"
 

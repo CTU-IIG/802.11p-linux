@@ -214,8 +214,6 @@ static int egalax_ts_probe(struct i2c_client *client,
 			     ABS_MT_POSITION_Y, 0, EGALAX_MAX_Y, 0, 0);
 	input_mt_init_slots(input_dev, MAX_SUPPORT_POINTS, 0);
 
-	input_set_drvdata(input_dev, ts);
-
 	error = devm_request_threaded_irq(&client->dev, client->irq, NULL,
 					  egalax_ts_interrupt,
 					  IRQF_TRIGGER_LOW | IRQF_ONESHOT,
@@ -229,7 +227,6 @@ static int egalax_ts_probe(struct i2c_client *client,
 	if (error)
 		return error;
 
-	i2c_set_clientdata(client, ts);
 	return 0;
 }
 
@@ -264,11 +261,11 @@ static const struct of_device_id egalax_ts_dt_ids[] = {
 	{ .compatible = "eeti,egalax_ts" },
 	{ /* sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, egalax_ts_dt_ids);
 
 static struct i2c_driver egalax_ts_driver = {
 	.driver = {
 		.name	= "egalax_ts",
-		.owner	= THIS_MODULE,
 		.pm	= &egalax_ts_pm_ops,
 		.of_match_table	= egalax_ts_dt_ids,
 	},

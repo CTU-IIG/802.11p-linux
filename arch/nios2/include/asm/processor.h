@@ -75,18 +75,10 @@ static inline void release_thread(struct task_struct *dead_task)
 {
 }
 
-/* Free current thread data structures etc.. */
-static inline void exit_thread(void)
-{
-}
-
 /* Return saved PC of a blocked thread. */
 #define thread_saved_pc(tsk)	((tsk)->thread.kregs->ea)
 
 extern unsigned long get_wchan(struct task_struct *p);
-
-/* Prepare to copy thread state - unlazy all lazy status */
-#define prepare_to_copy(tsk)	do { } while (0)
 
 #define task_pt_regs(p) \
 	((struct pt_regs *)(THREAD_SIZE + task_stack_page(p)) - 1)
@@ -96,7 +88,6 @@ extern unsigned long get_wchan(struct task_struct *p);
 #define KSTK_ESP(tsk)	((tsk)->thread.kregs->sp)
 
 #define cpu_relax()	barrier()
-#define cpu_relax_lowlatency()  cpu_relax()
 
 #endif /* __ASSEMBLY__ */
 

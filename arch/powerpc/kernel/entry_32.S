@@ -20,6 +20,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/err.h>
 #include <linux/sys.h>
 #include <linux/threads.h>
 #include <asm/reg.h>
@@ -32,9 +33,7 @@
 #include <asm/unistd.h>
 #include <asm/ftrace.h>
 #include <asm/ptrace.h>
-
-#undef SHOW_SYSCALLS
-#undef SHOW_SYSCALLS_TASK
+#include <asm/export.h>
 
 /*
  * MSR_KERNEL is > 0x10000 on 4xx/Book-E since it include MSR_CE.
@@ -177,6 +176,12 @@ transfer_to_handler:
 	addi	r12,r12,-1
 	stw	r12,4(r11)
 #endif
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+	CURRENT_THREAD_INFO(r9, r1)
+	tophys(r9, r9)
+	ACCOUNT_CPU_USER_ENTRY(r9, r11, r12)
+#endif
+
 	b	3f
 
 2:	/* if from kernel, check interrupted DOZE/NAP mode and
@@ -200,6 +205,9 @@ transfer_to_handler_cont:
 	mflr	r9
 	lwz	r11,0(r9)		/* virtual address of handler */
 	lwz	r9,4(r9)		/* where to go when done */
+#ifdef CONFIG_PPC_8xx_PERF_EVENT
+	mtspr	SPRN_NRI, r0
+#endif
 #ifdef CONFIG_TRACE_IRQFLAGS
 	lis	r12,reenable_mmu@h
 	ori	r12,r12,reenable_mmu@l
@@ -287,7 +295,9 @@ stack_ovf:
 	lis	r9,StackOverflow@ha
 	addi	r9,r9,StackOverflow@l
 	LOAD_MSR_KERNEL(r10,MSR_KERNEL)
-	FIX_SRR1(r10,r12)
+#ifdef CONFIG_PPC_8xx_PERF_EVENT
+	mtspr	SPRN_NRI, r0
+#endif
 	mtspr	SPRN_SRR0,r9
 	mtspr	SPRN_SRR1,r10
 	SYNC
@@ -307,9 +317,6 @@ _GLOBAL(DoSyscall)
 	lwz	r11,_CCR(r1)	/* Clear SO bit in CR */
 	rlwinm	r11,r11,0,4,2
 	stw	r11,_CCR(r1)
-#ifdef SHOW_SYSCALLS
-	bl	do_show_syscall
-#endif /* SHOW_SYSCALLS */
 #ifdef CONFIG_TRACE_IRQFLAGS
 	/* Return from syscalls can (and generally will) hard enable
 	 * interrupts. You aren't supposed to call a syscall with
@@ -337,7 +344,7 @@ _GLOBAL(DoSyscall)
 #endif /* CONFIG_TRACE_IRQFLAGS */
 	CURRENT_THREAD_INFO(r10, r1)
 	lwz	r11,TI_FLAGS(r10)
-	andi.	r11,r11,_TIF_SYSCALL_T_OR_A
+	andi.	r11,r11,_TIF_SYSCALL_DOTRACE
 	bne-	syscall_dotrace
 syscall_dotrace_cont:
 	cmplwi	0,r0,NR_syscalls
@@ -352,9 +359,6 @@ syscall_dotrace_cont:
 	blrl			/* Call handler */
 	.globl	ret_from_syscall
 ret_from_syscall:
-#ifdef SHOW_SYSCALLS
-	bl	do_show_syscall_exit
-#endif
 	mr	r6,r3
 	CURRENT_THREAD_INFO(r12, r1)
 	/* disable interrupts so current_thread_info()->flags can't change */
@@ -363,8 +367,8 @@ ret_from_syscall:
 	SYNC
 	MTMSRD(r10)
 	lwz	r9,TI_FLAGS(r12)
-	li	r8,-_LAST_ERRNO
-	andi.	r0,r9,(_TIF_SYSCALL_T_OR_A|_TIF_SINGLESTEP|_TIF_USER_WORK_MASK|_TIF_PERSYSCALL_MASK)
+	li	r8,-MAX_ERRNO
+	andi.	r0,r9,(_TIF_SYSCALL_DOTRACE|_TIF_SINGLESTEP|_TIF_USER_WORK_MASK|_TIF_PERSYSCALL_MASK)
 	bne-	syscall_exit_work
 	cmplw	0,r3,r8
 	blt+	syscall_exit_cont
@@ -406,14 +410,23 @@ BEGIN_FTR_SECTION
 	lwarx	r7,0,r1
 END_FTR_SECTION_IFSET(CPU_FTR_NEED_PAIRED_STWCX)
 	stwcx.	r0,0,r1			/* to clear the reservation */
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+	andi.	r4,r8,MSR_PR
+	beq	3f
+	CURRENT_THREAD_INFO(r4, r1)
+	ACCOUNT_CPU_USER_EXIT(r4, r5, r7)
+3:
+#endif
 	lwz	r4,_LINK(r1)
 	lwz	r5,_CCR(r1)
 	mtlr	r4
 	mtcr	r5
 	lwz	r7,_NIP(r1)
-	FIX_SRR1(r8, r0)
 	lwz	r2,GPR2(r1)
 	lwz	r1,GPR1(r1)
+#ifdef CONFIG_PPC_8xx_PERF_EVENT
+	mtspr	SPRN_NRI, r0
+#endif
 	mtspr	SPRN_SRR0,r7
 	mtspr	SPRN_SRR1,r8
 	SYNC
@@ -466,6 +479,10 @@ syscall_dotrace:
 	lwz	r7,GPR7(r1)
 	lwz	r8,GPR8(r1)
 	REST_NVGPRS(r1)
+
+	cmplwi	r0,NR_syscalls
+	/* Return code is already in r3 thanks to do_syscall_trace_enter() */
+	bge-	ret_from_syscall
 	b	syscall_dotrace_cont
 
 syscall_exit_work:
@@ -501,7 +518,7 @@ syscall_exit_work:
 	subi	r12,r12,TI_FLAGS
 	
 4:	/* Anything which requires enabling interrupts? */
-	andi.	r0,r9,(_TIF_SYSCALL_T_OR_A|_TIF_SINGLESTEP)
+	andi.	r0,r9,(_TIF_SYSCALL_DOTRACE|_TIF_SINGLESTEP)
 	beq	ret_from_except
 
 	/* Re-enable interrupts. There is no need to trace that with
@@ -522,74 +539,6 @@ syscall_exit_work:
 	addi	r3,r1,STACK_FRAME_OVERHEAD
 	bl	do_syscall_trace_leave
 	b	ret_from_except_full
-
-#ifdef SHOW_SYSCALLS
-do_show_syscall:
-#ifdef SHOW_SYSCALLS_TASK
-	lis	r11,show_syscalls_task@ha
-	lwz	r11,show_syscalls_task@l(r11)
-	cmp	0,r2,r11
-	bnelr
-#endif
-	stw	r31,GPR31(r1)
-	mflr	r31
-	lis	r3,7f@ha
-	addi	r3,r3,7f@l
-	lwz	r4,GPR0(r1)
-	lwz	r5,GPR3(r1)
-	lwz	r6,GPR4(r1)
-	lwz	r7,GPR5(r1)
-	lwz	r8,GPR6(r1)
-	lwz	r9,GPR7(r1)
-	bl	printk
-	lis	r3,77f@ha
-	addi	r3,r3,77f@l
-	lwz	r4,GPR8(r1)
-	mr	r5,r2
-	bl	printk
-	lwz	r0,GPR0(r1)
-	lwz	r3,GPR3(r1)
-	lwz	r4,GPR4(r1)
-	lwz	r5,GPR5(r1)
-	lwz	r6,GPR6(r1)
-	lwz	r7,GPR7(r1)
-	lwz	r8,GPR8(r1)
-	mtlr	r31
-	lwz	r31,GPR31(r1)
-	blr
-
-do_show_syscall_exit:
-#ifdef SHOW_SYSCALLS_TASK
-	lis	r11,show_syscalls_task@ha
-	lwz	r11,show_syscalls_task@l(r11)
-	cmp	0,r2,r11
-	bnelr
-#endif
-	stw	r31,GPR31(r1)
-	mflr	r31
-	stw	r3,RESULT(r1)	/* Save result */
-	mr	r4,r3
-	lis	r3,79f@ha
-	addi	r3,r3,79f@l
-	bl	printk
-	lwz	r3,RESULT(r1)
-	mtlr	r31
-	lwz	r31,GPR31(r1)
-	blr
-
-7:	.string	"syscall %d(%x, %x, %x, %x, %x, "
-77:	.string	"%x), current=%p\n"
-79:	.string	" -> %x\n"
-	.align	2,0
-
-#ifdef SHOW_SYSCALLS_TASK
-	.data
-	.globl	show_syscalls_task
-show_syscalls_task:
-	.long	-1
-	.text
-#endif
-#endif /* SHOW_SYSCALLS */
 
 /*
  * The fork/clone functions need to copy the full register set into
@@ -713,7 +662,6 @@ END_FTR_SECTION_IFSET(CPU_FTR_SPE)
 #endif /* CONFIG_SMP */
 
 	tophys(r0,r4)
-	CLR_TOP32(r0)
 	mtspr	SPRN_SPRG_THREAD,r0	/* Update current THREAD phys addr */
 	lwz	r1,KSP(r4)	/* Load new stack pointer */
 
@@ -758,6 +706,9 @@ fast_exception_return:
 	lwz	r10,_LINK(r11)
 	mtlr	r10
 	REST_GPR(10, r11)
+#ifdef CONFIG_PPC_8xx_PERF_EVENT
+	mtspr	SPRN_NRI, r0
+#endif
 	mtspr	SPRN_SRR1,r9
 	mtspr	SPRN_SRR0,r12
 	REST_GPR(9, r11)
@@ -840,6 +791,10 @@ restore_user:
 	lwz	r0,THREAD+THREAD_DBCR0(r2)
 	andis.	r10,r0,DBCR0_IDM@h
 	bnel-	load_dbcr0
+#endif
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+	CURRENT_THREAD_INFO(r9, r1)
+	ACCOUNT_CPU_USER_EXIT(r9, r10, r11)
 #endif
 
 	b	restore
@@ -1002,7 +957,9 @@ END_FTR_SECTION_IFSET(CPU_FTR_NEED_PAIRED_STWCX)
 	.globl exc_exit_restart
 exc_exit_restart:
 	lwz	r12,_NIP(r1)
-	FIX_SRR1(r9,r10)
+#ifdef CONFIG_PPC_8xx_PERF_EVENT
+	mtspr	SPRN_NRI, r0
+#endif
 	mtspr	SPRN_SRR0,r12
 	mtspr	SPRN_SRR1,r9
 	REST_4GPRS(9, r1)
@@ -1345,7 +1302,6 @@ _GLOBAL(enter_rtas)
 1:	tophys(r9,r1)
 	lwz	r8,INT_FRAME_SIZE+4(r9)	/* get return address */
 	lwz	r9,8(r9)	/* original msr value */
-	FIX_SRR1(r9,r0)
 	addi	r1,r1,INT_FRAME_SIZE
 	li	r0,0
 	mtspr	SPRN_SPRG_RTAS,r0
@@ -1414,6 +1370,7 @@ _GLOBAL(_mcount)
 	MCOUNT_RESTORE_FRAME
 	bctr
 #endif
+EXPORT_SYMBOL(_mcount)
 
 _GLOBAL(ftrace_stub)
 	blr

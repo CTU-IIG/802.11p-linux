@@ -1,7 +1,11 @@
 #ifndef CEPH_CRUSH_CRUSH_H
 #define CEPH_CRUSH_CRUSH_H
 
-#include <linux/types.h>
+#ifdef __KERNEL__
+# include <linux/types.h>
+#else
+# include "crush_compat.h"
+#endif
 
 /*
  * CRUSH is a pseudo-random data distribution algorithm that
@@ -20,7 +24,11 @@
 #define CRUSH_MAGIC 0x00010000ul   /* for detecting algorithm revisions */
 
 #define CRUSH_MAX_DEPTH 10  /* max crush hierarchy depth */
+#define CRUSH_MAX_RULESET (1<<8)  /* max crush ruleset number */
+#define CRUSH_MAX_RULES CRUSH_MAX_RULESET  /* should be the same as max rulesets */
 
+#define CRUSH_MAX_DEVICE_WEIGHT (100u * 0x10000u)
+#define CRUSH_MAX_BUCKET_WEIGHT (65535u * 0x10000u)
 
 #define CRUSH_ITEM_UNDEF  0x7ffffffe  /* undefined result (internal use only) */
 #define CRUSH_ITEM_NONE   0x7fffffff  /* no result */
@@ -51,7 +59,8 @@ enum {
 	CRUSH_RULE_SET_CHOOSELEAF_TRIES = 9, /* override chooseleaf_descend_once */
 	CRUSH_RULE_SET_CHOOSE_LOCAL_TRIES = 10,
 	CRUSH_RULE_SET_CHOOSE_LOCAL_FALLBACK_TRIES = 11,
-	CRUSH_RULE_SET_CHOOSELEAF_VARY_R = 12
+	CRUSH_RULE_SET_CHOOSELEAF_VARY_R = 12,
+	CRUSH_RULE_SET_CHOOSELEAF_STABLE = 13
 };
 
 /*
@@ -96,15 +105,26 @@ struct crush_rule {
  *  uniform         O(1)       poor         poor
  *  list            O(n)       optimal      poor
  *  tree            O(log n)   good         good
- *  straw           O(n)       optimal      optimal
+ *  straw           O(n)       better       better
+ *  straw2          O(n)       optimal      optimal
  */
 enum {
 	CRUSH_BUCKET_UNIFORM = 1,
 	CRUSH_BUCKET_LIST = 2,
 	CRUSH_BUCKET_TREE = 3,
-	CRUSH_BUCKET_STRAW = 4
+	CRUSH_BUCKET_STRAW = 4,
+	CRUSH_BUCKET_STRAW2 = 5,
 };
 extern const char *crush_bucket_alg_name(int alg);
+
+/*
+ * although tree was a legacy algorithm, it has been buggy, so
+ * exclude it.
+ */
+#define CRUSH_LEGACY_ALLOWED_BUCKET_ALGS (	\
+		(1 << CRUSH_BUCKET_UNIFORM) |	\
+		(1 << CRUSH_BUCKET_LIST) |	\
+		(1 << CRUSH_BUCKET_STRAW))
 
 struct crush_bucket {
 	__s32 id;        /* this'll be negative */
@@ -115,13 +135,6 @@ struct crush_bucket {
 	__u32 size;      /* num items */
 	__s32 *items;
 
-	/*
-	 * cached random permutation: used for uniform bucket and for
-	 * the linear search fallback for the other bucket types.
-	 */
-	__u32 perm_x;  /* @x for which *perm is defined */
-	__u32 perm_n;  /* num elements of *perm that are permuted/defined */
-	__u32 *perm;
 };
 
 struct crush_bucket_uniform {
@@ -149,6 +162,11 @@ struct crush_bucket_straw {
 	__u32 *straws;         /* 16-bit fixed point */
 };
 
+struct crush_bucket_straw2 {
+	struct crush_bucket h;
+	__u32 *item_weights;   /* 16-bit fixed point */
+};
+
 
 
 /*
@@ -167,7 +185,7 @@ struct crush_map {
 	/* choose local attempts using a fallback permutation before
 	 * re-descent */
 	__u32 choose_local_fallback_tries;
-	/* choose attempts before giving up */ 
+	/* choose attempts before giving up */
 	__u32 choose_total_tries;
 	/* attempt chooseleaf inner descent once for firstn mode; on
 	 * reject retry outer descent.  Note that this does *not*
@@ -180,6 +198,45 @@ struct crush_map {
 	 * that want to limit reshuffling, a value of 3 or 4 will make the
 	 * mappings line up a bit better with previous mappings. */
 	__u8 chooseleaf_vary_r;
+
+	/* if true, it makes chooseleaf firstn to return stable results (if
+	 * no local retry) so that data migrations would be optimal when some
+	 * device fails. */
+	__u8 chooseleaf_stable;
+
+	/*
+	 * This value is calculated after decode or construction by
+	 * the builder. It is exposed here (rather than having a
+	 * 'build CRUSH working space' function) so that callers can
+	 * reserve a static buffer, allocate space on the stack, or
+	 * otherwise avoid calling into the heap allocator if they
+	 * want to. The size of the working space depends on the map,
+	 * while the size of the scratch vector passed to the mapper
+	 * depends on the size of the desired result set.
+	 *
+	 * Nothing stops the caller from allocating both in one swell
+	 * foop and passing in two points, though.
+	 */
+	size_t working_size;
+
+#ifndef __KERNEL__
+	/*
+	 * version 0 (original) of straw_calc has various flaws.  version 1
+	 * fixes a few of them.
+	 */
+	__u8 straw_calc_version;
+
+	/*
+	 * allowed bucket algs is a bitmask, here the bit positions
+	 * are CRUSH_BUCKET_*.  note that these are *bits* and
+	 * CRUSH_BUCKET_* values are not, so we need to or together (1
+	 * << CRUSH_BUCKET_WHATEVER).  The 0th bit is not used to
+	 * minimize confusion (bucket type values start at 1).
+	 */
+	__u32 allowed_bucket_algs;
+
+	__u32 *choose_tries;
+#endif
 };
 
 
@@ -189,6 +246,7 @@ extern void crush_destroy_bucket_uniform(struct crush_bucket_uniform *b);
 extern void crush_destroy_bucket_list(struct crush_bucket_list *b);
 extern void crush_destroy_bucket_tree(struct crush_bucket_tree *b);
 extern void crush_destroy_bucket_straw(struct crush_bucket_straw *b);
+extern void crush_destroy_bucket_straw2(struct crush_bucket_straw2 *b);
 extern void crush_destroy_bucket(struct crush_bucket *b);
 extern void crush_destroy_rule(struct crush_rule *r);
 extern void crush_destroy(struct crush_map *map);
@@ -197,5 +255,24 @@ static inline int crush_calc_tree_node(int i)
 {
 	return ((i+1) << 1)-1;
 }
+
+/*
+ * These data structures are private to the CRUSH implementation. They
+ * are exposed in this header file because builder needs their
+ * definitions to calculate the total working size.
+ *
+ * Moving this out of the crush map allow us to treat the CRUSH map as
+ * immutable within the mapper and removes the requirement for a CRUSH
+ * map lock.
+ */
+struct crush_work_bucket {
+	__u32 perm_x; /* @x for which *perm is defined */
+	__u32 perm_n; /* num elements of *perm that are permuted/defined */
+	__u32 *perm;  /* Permutation of the bucket's items */
+};
+
+struct crush_work {
+	struct crush_work_bucket **work; /* Per-bucket working store */
+};
 
 #endif

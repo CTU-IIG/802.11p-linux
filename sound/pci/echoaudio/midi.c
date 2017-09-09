@@ -257,9 +257,8 @@ static void snd_echo_midi_output_trigger(struct snd_rawmidi_substream *substream
 	spin_lock_irq(&chip->lock);
 	if (up) {
 		if (!chip->tinuse) {
-			init_timer(&chip->timer);
-			chip->timer.function = snd_echo_midi_output_write;
-			chip->timer.data = (unsigned long)chip;
+			setup_timer(&chip->timer, snd_echo_midi_output_write,
+				    (unsigned long)chip);
 			chip->tinuse = 1;
 		}
 	} else {
@@ -289,13 +288,13 @@ static int snd_echo_midi_output_close(struct snd_rawmidi_substream *substream)
 
 
 
-static struct snd_rawmidi_ops snd_echo_midi_input = {
+static const struct snd_rawmidi_ops snd_echo_midi_input = {
 	.open = snd_echo_midi_input_open,
 	.close = snd_echo_midi_input_close,
 	.trigger = snd_echo_midi_input_trigger,
 };
 
-static struct snd_rawmidi_ops snd_echo_midi_output = {
+static const struct snd_rawmidi_ops snd_echo_midi_output = {
 	.open = snd_echo_midi_output_open,
 	.close = snd_echo_midi_output_close,
 	.trigger = snd_echo_midi_output_trigger,

@@ -16,14 +16,19 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
 
 #include "core.h"
+#include "card.h"
+#include "host.h"
 #include "sdio_cis.h"
 #include "bus.h"
+
+#define to_mmc_driver(d)	container_of(d, struct mmc_driver, drv)
 
 static ssize_t type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -104,14 +109,33 @@ mmc_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 	return retval;
 }
 
+static int mmc_bus_probe(struct device *dev)
+{
+	struct mmc_driver *drv = to_mmc_driver(dev->driver);
+	struct mmc_card *card = mmc_dev_to_card(dev);
+
+	return drv->probe(card);
+}
+
+static int mmc_bus_remove(struct device *dev)
+{
+	struct mmc_driver *drv = to_mmc_driver(dev->driver);
+	struct mmc_card *card = mmc_dev_to_card(dev);
+
+	drv->remove(card);
+
+	return 0;
+}
+
 static void mmc_bus_shutdown(struct device *dev)
 {
+	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
 	struct mmc_host *host = card->host;
 	int ret;
 
-	if (dev->driver && dev->driver->shutdown)
-		dev->driver->shutdown(dev);
+	if (dev->driver && drv->shutdown)
+		drv->shutdown(card);
 
 	if (host->bus_ops->shutdown) {
 		ret = host->bus_ops->shutdown(host);
@@ -180,6 +204,8 @@ static struct bus_type mmc_bus_type = {
 	.dev_groups	= mmc_dev_groups,
 	.match		= mmc_bus_match,
 	.uevent		= mmc_bus_uevent,
+	.probe		= mmc_bus_probe,
+	.remove		= mmc_bus_remove,
 	.shutdown	= mmc_bus_shutdown,
 	.pm		= &mmc_bus_pm_ops,
 };
@@ -198,22 +224,24 @@ void mmc_unregister_bus(void)
  *	mmc_register_driver - register a media driver
  *	@drv: MMC media driver
  */
-int mmc_register_driver(struct device_driver *drv)
+int mmc_register_driver(struct mmc_driver *drv)
 {
-	drv->bus = &mmc_bus_type;
-	return driver_register(drv);
+	drv->drv.bus = &mmc_bus_type;
+	return driver_register(&drv->drv);
 }
+
 EXPORT_SYMBOL(mmc_register_driver);
 
 /**
  *	mmc_unregister_driver - unregister a media driver
  *	@drv: MMC media driver
  */
-void mmc_unregister_driver(struct device_driver *drv)
+void mmc_unregister_driver(struct mmc_driver *drv)
 {
-	drv->bus = &mmc_bus_type;
-	driver_unregister(drv);
+	drv->drv.bus = &mmc_bus_type;
+	driver_unregister(&drv->drv);
 }
+
 EXPORT_SYMBOL(mmc_unregister_driver);
 
 static void mmc_release_card(struct device *dev)
@@ -306,12 +334,13 @@ int mmc_add_card(struct mmc_card *card)
 			mmc_card_ddr52(card) ? "DDR " : "",
 			type);
 	} else {
-		pr_info("%s: new %s%s%s%s%s card at address %04x\n",
+		pr_info("%s: new %s%s%s%s%s%s card at address %04x\n",
 			mmc_hostname(card->host),
 			mmc_card_uhs(card) ? "ultra high speed " :
 			(mmc_card_hs(card) ? "high speed " : ""),
 			mmc_card_hs400(card) ? "HS400 " :
 			(mmc_card_hs200(card) ? "HS200 " : ""),
+			mmc_card_hs400es(card) ? "Enhanced strobe " : "",
 			mmc_card_ddr52(card) ? "DDR " : "",
 			uhs_bus_speed_mode, type, card->rca);
 	}
@@ -320,6 +349,10 @@ int mmc_add_card(struct mmc_card *card)
 	mmc_add_card_debugfs(card);
 #endif
 	mmc_init_context_info(card->host);
+
+	card->dev.of_node = mmc_of_find_child_device(card->host, 0);
+
+	device_enable_async_suspend(&card->dev);
 
 	ret = device_add(&card->dev);
 	if (ret)
@@ -349,6 +382,7 @@ void mmc_remove_card(struct mmc_card *card)
 				mmc_hostname(card->host), card->rca);
 		}
 		device_del(&card->dev);
+		of_node_put(card->dev.of_node);
 	}
 
 	put_device(&card->dev);

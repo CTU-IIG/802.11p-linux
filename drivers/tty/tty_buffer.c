@@ -37,7 +37,6 @@
 
 #define TTY_BUFFER_PAGE	(((PAGE_SIZE - sizeof(struct tty_buffer)) / 2) & ~0xFF)
 
-
 /**
  *	tty_buffer_lock_exclusive	-	gain exclusive access to buffer
  *	tty_buffer_unlock_exclusive	-	release exclusive access
@@ -220,7 +219,10 @@ void tty_buffer_flush(struct tty_struct *tty, struct tty_ldisc *ld)
 	atomic_inc(&buf->priority);
 
 	mutex_lock(&buf->lock);
-	while ((next = buf->head->next) != NULL) {
+	/* paired w/ release in __tty_buffer_request_room; ensures there are
+	 * no pending memory accesses to the freed buffer
+	 */
+	while ((next = smp_load_acquire(&buf->head->next)) != NULL) {
 		tty_buffer_free(port, buf->head);
 		buf->head = next;
 	}
@@ -262,16 +264,19 @@ static int __tty_buffer_request_room(struct tty_port *port, size_t size,
 	change = (b->flags & TTYB_NORMAL) && (~flags & TTYB_NORMAL);
 	if (change || left < size) {
 		/* This is the slow path - looking for new buffers to use */
-		if ((n = tty_buffer_alloc(port, size)) != NULL) {
+		n = tty_buffer_alloc(port, size);
+		if (n != NULL) {
 			n->flags = flags;
 			buf->tail = n;
-			b->commit = b->used;
-			/* paired w/ barrier in flush_to_ldisc(); ensures the
+			/* paired w/ acquire in flush_to_ldisc(); ensures
+			 * flush_to_ldisc() sees buffer data.
+			 */
+			smp_store_release(&b->commit, b->used);
+			/* paired w/ acquire in flush_to_ldisc(); ensures the
 			 * latest commit value can be read before the head is
 			 * advanced to the next buffer
 			 */
-			smp_wmb();
-			b->next = n;
+			smp_store_release(&b->next, n);
 		} else if (change)
 			size = 0;
 		else
@@ -369,8 +374,11 @@ void tty_schedule_flip(struct tty_port *port)
 {
 	struct tty_bufhead *buf = &port->buf;
 
-	buf->tail->commit = buf->tail->used;
-	schedule_work(&buf->work);
+	/* paired w/ acquire in flush_to_ldisc(); ensures
+	 * flush_to_ldisc() sees buffer data.
+	 */
+	smp_store_release(&buf->tail->commit, buf->tail->used);
+	queue_work(system_unbound_wq, &buf->work);
 }
 EXPORT_SYMBOL(tty_schedule_flip);
 
@@ -402,26 +410,42 @@ int tty_prepare_flip_string(struct tty_port *port, unsigned char **chars,
 }
 EXPORT_SYMBOL_GPL(tty_prepare_flip_string);
 
+/**
+ *	tty_ldisc_receive_buf		-	forward data to line discipline
+ *	@ld:	line discipline to process input
+ *	@p:	char buffer
+ *	@f:	TTY_* flags buffer
+ *	@count:	number of bytes to process
+ *
+ *	Callers other than flush_to_ldisc() need to exclude the kworker
+ *	from concurrent use of the line discipline, see paste_selection().
+ *
+ *	Returns the number of bytes not processed
+ */
+int tty_ldisc_receive_buf(struct tty_ldisc *ld, const unsigned char *p,
+			  char *f, int count)
+{
+	if (ld->ops->receive_buf2)
+		count = ld->ops->receive_buf2(ld->tty, p, f, count);
+	else {
+		count = min_t(int, count, ld->tty->receive_room);
+		if (count && ld->ops->receive_buf)
+			ld->ops->receive_buf(ld->tty, p, f, count);
+	}
+	return count;
+}
+EXPORT_SYMBOL_GPL(tty_ldisc_receive_buf);
 
 static int
-receive_buf(struct tty_struct *tty, struct tty_buffer *head, int count)
+receive_buf(struct tty_port *port, struct tty_buffer *head, int count)
 {
-	struct tty_ldisc *disc = tty->ldisc;
 	unsigned char *p = char_buf_ptr(head, head->read);
 	char	      *f = NULL;
 
 	if (~head->flags & TTYB_NORMAL)
 		f = flag_buf_ptr(head, head->read);
 
-	if (disc->ops->receive_buf2)
-		count = disc->ops->receive_buf2(tty, p, f, count);
-	else {
-		count = min_t(int, count, tty->receive_room);
-		if (count)
-			disc->ops->receive_buf(tty, p, f, count);
-	}
-	head->read += count;
-	return count;
+	return port->client_ops->receive_buf(port, p, f, count);
 }
 
 /**
@@ -441,16 +465,6 @@ static void flush_to_ldisc(struct work_struct *work)
 {
 	struct tty_port *port = container_of(work, struct tty_port, buf.work);
 	struct tty_bufhead *buf = &port->buf;
-	struct tty_struct *tty;
-	struct tty_ldisc *disc;
-
-	tty = port->itty;
-	if (tty == NULL)
-		return;
-
-	disc = tty_ldisc_ref(tty);
-	if (disc == NULL)
-		return;
 
 	mutex_lock(&buf->lock);
 
@@ -463,13 +477,15 @@ static void flush_to_ldisc(struct work_struct *work)
 		if (atomic_read(&buf->priority))
 			break;
 
-		next = head->next;
-		/* paired w/ barrier in __tty_buffer_request_room();
+		/* paired w/ release in __tty_buffer_request_room();
 		 * ensures commit value read is not stale if the head
 		 * is advancing to the next buffer
 		 */
-		smp_rmb();
-		count = head->commit - head->read;
+		next = smp_load_acquire(&head->next);
+		/* paired w/ release in __tty_buffer_request_room() or in
+		 * tty_buffer_flush(); ensures we see the committed buffer data
+		 */
+		count = smp_load_acquire(&head->commit) - head->read;
 		if (!count) {
 			if (next == NULL)
 				break;
@@ -478,27 +494,14 @@ static void flush_to_ldisc(struct work_struct *work)
 			continue;
 		}
 
-		count = receive_buf(tty, head, count);
+		count = receive_buf(port, head, count);
 		if (!count)
 			break;
+		head->read += count;
 	}
 
 	mutex_unlock(&buf->lock);
 
-	tty_ldisc_deref(disc);
-}
-
-/**
- *	tty_flush_to_ldisc
- *	@tty: tty to push
- *
- *	Push the terminal flip buffers to the line discipline.
- *
- *	Must not be called from IRQ context.
- */
-void tty_flush_to_ldisc(struct tty_struct *tty)
-{
-	flush_work(&tty->port->buf.work);
 }
 
 /**
@@ -557,3 +560,24 @@ int tty_buffer_set_limit(struct tty_port *port, int limit)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tty_buffer_set_limit);
+
+/* slave ptys can claim nested buffer lock when handling BRK and INTR */
+void tty_buffer_set_lock_subclass(struct tty_port *port)
+{
+	lockdep_set_subclass(&port->buf.lock, TTY_LOCK_SLAVE);
+}
+
+bool tty_buffer_restart_work(struct tty_port *port)
+{
+	return queue_work(system_unbound_wq, &port->buf.work);
+}
+
+bool tty_buffer_cancel_work(struct tty_port *port)
+{
+	return cancel_work_sync(&port->buf.work);
+}
+
+void tty_buffer_flush_work(struct tty_port *port)
+{
+	flush_work(&port->buf.work);
+}

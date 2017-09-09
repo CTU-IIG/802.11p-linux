@@ -32,11 +32,11 @@
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/kernel.h>
+#include <linux/mc146818rtc.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/sfi.h>
 
-#include <asm-generic/rtc.h>
 #include <asm/intel_scu_ipc.h>
 #include <asm/intel-mid.h>
 #include <asm/intel_mid_vrtc.h>
@@ -149,14 +149,6 @@ static int mrst_read_alarm(struct device *dev, struct rtc_wkalrm *t)
 	if (mrst->irq <= 0)
 		return -EIO;
 
-	/* Basic alarms only support hour, minute, and seconds fields.
-	 * Some also support day and month, for alarms up to a year in
-	 * the future.
-	 */
-	t->time.tm_mday = -1;
-	t->time.tm_mon = -1;
-	t->time.tm_year = -1;
-
 	/* vRTC only supports binary mode */
 	spin_lock_irq(&rtc_lock);
 	t->time.tm_sec = vrtc_cmos_read(RTC_SECONDS_ALARM);
@@ -266,7 +258,7 @@ static int mrst_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
 }
 
 
-#if defined(CONFIG_RTC_INTF_PROC) || defined(CONFIG_RTC_INTF_PROC_MODULE)
+#if IS_ENABLED(CONFIG_RTC_INTF_PROC)
 
 static int mrst_procfs(struct device *dev, struct seq_file *seq)
 {
@@ -277,13 +269,15 @@ static int mrst_procfs(struct device *dev, struct seq_file *seq)
 	valid = vrtc_cmos_read(RTC_VALID);
 	spin_unlock_irq(&rtc_lock);
 
-	return seq_printf(seq,
-			"periodic_IRQ\t: %s\n"
-			"alarm\t\t: %s\n"
-			"BCD\t\t: no\n"
-			"periodic_freq\t: daily (not adjustable)\n",
-			(rtc_control & RTC_PIE) ? "on" : "off",
-			(rtc_control & RTC_AIE) ? "on" : "off");
+	seq_printf(seq,
+		   "periodic_IRQ\t: %s\n"
+		   "alarm\t\t: %s\n"
+		   "BCD\t\t: no\n"
+		   "periodic_freq\t: daily (not adjustable)\n",
+		   (rtc_control & RTC_PIE) ? "on" : "off",
+		   (rtc_control & RTC_AIE) ? "on" : "off");
+
+	return 0;
 }
 
 #else
@@ -413,8 +407,8 @@ static void rtc_mrst_do_remove(struct device *dev)
 	mrst->dev = NULL;
 }
 
-#ifdef	CONFIG_PM
-static int mrst_suspend(struct device *dev, pm_message_t mesg)
+#ifdef CONFIG_PM_SLEEP
+static int mrst_suspend(struct device *dev)
 {
 	struct mrst_rtc	*mrst = dev_get_drvdata(dev);
 	unsigned char	tmp;
@@ -453,7 +447,7 @@ static int mrst_suspend(struct device *dev, pm_message_t mesg)
  */
 static inline int mrst_poweroff(struct device *dev)
 {
-	return mrst_suspend(dev, PMSG_HIBERNATE);
+	return mrst_suspend(dev);
 }
 
 static int mrst_resume(struct device *dev)
@@ -490,9 +484,11 @@ static int mrst_resume(struct device *dev)
 	return 0;
 }
 
+static SIMPLE_DEV_PM_OPS(mrst_pm_ops, mrst_suspend, mrst_resume);
+#define MRST_PM_OPS (&mrst_pm_ops)
+
 #else
-#define	mrst_suspend	NULL
-#define	mrst_resume	NULL
+#define MRST_PM_OPS NULL
 
 static inline int mrst_poweroff(struct device *dev)
 {
@@ -529,9 +525,8 @@ static struct platform_driver vrtc_mrst_platform_driver = {
 	.remove		= vrtc_mrst_platform_remove,
 	.shutdown	= vrtc_mrst_platform_shutdown,
 	.driver = {
-		.name		= (char *) driver_name,
-		.suspend	= mrst_suspend,
-		.resume		= mrst_resume,
+		.name	= driver_name,
+		.pm	= MRST_PM_OPS,
 	}
 };
 

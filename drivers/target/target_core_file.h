@@ -1,6 +1,8 @@
 #ifndef TARGET_CORE_FILE_H
 #define TARGET_CORE_FILE_H
 
+#include <target/target_core_base.h>
+
 #define FD_VERSION		"4.0"
 
 #define FD_MAX_DEV_NAME		256
@@ -20,12 +22,6 @@
 #define FBDF_HAS_SIZE		0x02
 #define FDBD_HAS_BUFFERED_IO_WCE 0x04
 #define FDBD_FORMAT_UNIT_SIZE	2048
-
-struct fd_prot {
-	unsigned char	*prot_buf;
-	struct scatterlist *prot_sg;
-	u32 prot_sg_nents;
-};
 
 struct fd_dev {
 	struct se_device dev;

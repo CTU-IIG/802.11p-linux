@@ -21,18 +21,12 @@
 
 #define STKFRM	(PPC_MIN_STKFRM + 16)
 
-	.macro	extab	instr,handler
-	.section __ex_table,"a"
-	PPC_LONG \instr,\handler
-	.previous
-	.endm
-
 	.macro	inst32	op
 reg = 0
 	.rept	32
 20:	\op	reg,0,r4
 	b	3f
-	extab	20b,99f
+	EX_TABLE(20b,99f)
 reg = reg + 1
 	.endr
 	.endm
@@ -100,7 +94,7 @@ _GLOBAL(do_lfs)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 
 /* Load FP reg N from double at *p.  N is in r3, p in r4. */
 _GLOBAL(do_lfd)
@@ -127,7 +121,7 @@ _GLOBAL(do_lfd)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 
 /* Store FP reg N to float at *p.  N is in r3, p in r4. */
 _GLOBAL(do_stfs)
@@ -154,7 +148,7 @@ _GLOBAL(do_stfs)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 
 /* Store FP reg N to double at *p.  N is in r3, p in r4. */
 _GLOBAL(do_stfd)
@@ -181,19 +175,19 @@ _GLOBAL(do_stfd)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 
 #ifdef CONFIG_ALTIVEC
-/* Get the contents of vrN into vr0; N is in r3. */
+/* Get the contents of vrN into v0; N is in r3. */
 _GLOBAL(get_vr)
 	mflr	r0
 	rlwinm	r3,r3,3,0xf8
 	bcl	20,31,1f
-	blr			/* vr0 is already in vr0 */
+	blr			/* v0 is already in v0 */
 	nop
 reg = 1
 	.rept	31
-	vor	vr0,reg,reg	/* assembler doesn't know vmr? */
+	vor	v0,reg,reg	/* assembler doesn't know vmr? */
 	blr
 reg = reg + 1
 	.endr
@@ -203,16 +197,16 @@ reg = reg + 1
 	mtlr	r0
 	bctr
 
-/* Put the contents of vr0 into vrN; N is in r3. */
+/* Put the contents of v0 into vrN; N is in r3. */
 _GLOBAL(put_vr)
 	mflr	r0
 	rlwinm	r3,r3,3,0xf8
 	bcl	20,31,1f
-	blr			/* vr0 is already in vr0 */
+	blr			/* v0 is already in v0 */
 	nop
 reg = 1
 	.rept	31
-	vor	reg,vr0,vr0
+	vor	reg,v0,v0
 	blr
 reg = reg + 1
 	.endr
@@ -234,13 +228,13 @@ _GLOBAL(do_lvx)
 	MTMSRD(r7)
 	isync
 	beq	cr7,1f
-	stvx	vr0,r1,r8
+	stvx	v0,r1,r8
 1:	li	r9,-EFAULT
-2:	lvx	vr0,0,r4
+2:	lvx	v0,0,r4
 	li	r9,0
 3:	beq	cr7,4f
 	bl	put_vr
-	lvx	vr0,r1,r8
+	lvx	v0,r1,r8
 4:	PPC_LL	r0,STKFRM+PPC_LR_STKOFF(r1)
 	mtlr	r0
 	MTMSRD(r6)
@@ -248,7 +242,7 @@ _GLOBAL(do_lvx)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 
 /* Store vector reg N to *p.  N is in r3, p in r4. */
 _GLOBAL(do_stvx)
@@ -262,13 +256,13 @@ _GLOBAL(do_stvx)
 	MTMSRD(r7)
 	isync
 	beq	cr7,1f
-	stvx	vr0,r1,r8
+	stvx	v0,r1,r8
 	bl	get_vr
 1:	li	r9,-EFAULT
-2:	stvx	vr0,0,r4
+2:	stvx	v0,0,r4
 	li	r9,0
 3:	beq	cr7,4f
-	lvx	vr0,r1,r8
+	lvx	v0,r1,r8
 4:	PPC_LL	r0,STKFRM+PPC_LR_STKOFF(r1)
 	mtlr	r0
 	MTMSRD(r6)
@@ -276,16 +270,16 @@ _GLOBAL(do_stvx)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 #endif /* CONFIG_ALTIVEC */
 
 #ifdef CONFIG_VSX
-/* Get the contents of vsrN into vsr0; N is in r3. */
+/* Get the contents of vsN into vs0; N is in r3. */
 _GLOBAL(get_vsr)
 	mflr	r0
 	rlwinm	r3,r3,3,0x1f8
 	bcl	20,31,1f
-	blr			/* vsr0 is already in vsr0 */
+	blr			/* vs0 is already in vs0 */
 	nop
 reg = 1
 	.rept	63
@@ -299,12 +293,12 @@ reg = reg + 1
 	mtlr	r0
 	bctr
 
-/* Put the contents of vsr0 into vsrN; N is in r3. */
+/* Put the contents of vs0 into vsN; N is in r3. */
 _GLOBAL(put_vsr)
 	mflr	r0
 	rlwinm	r3,r3,3,0x1f8
 	bcl	20,31,1f
-	blr			/* vr0 is already in vr0 */
+	blr			/* v0 is already in v0 */
 	nop
 reg = 1
 	.rept	63
@@ -344,7 +338,7 @@ _GLOBAL(do_lxvd2x)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 
 /* Store VSX reg N to vector doubleword *p.  N is in r3, p in r4. */
 _GLOBAL(do_stxvd2x)
@@ -372,7 +366,7 @@ _GLOBAL(do_stxvd2x)
 	mr	r3,r9
 	addi	r1,r1,STKFRM
 	blr
-	extab	2b,3b
+	EX_TABLE(2b,3b)
 
 #endif /* CONFIG_VSX */
 

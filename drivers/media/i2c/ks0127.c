@@ -16,10 +16,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- *
  *****************************************************************************
  *
  * Modified and extended by
@@ -708,7 +704,6 @@ MODULE_DEVICE_TABLE(i2c, ks0127_id);
 
 static struct i2c_driver ks0127_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "ks0127",
 	},
 	.probe		= ks0127_probe,

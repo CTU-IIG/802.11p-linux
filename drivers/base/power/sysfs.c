@@ -263,7 +263,11 @@ static ssize_t pm_qos_latency_tolerance_store(struct device *dev,
 	s32 value;
 	int ret;
 
-	if (kstrtos32(buf, 0, &value)) {
+	if (kstrtos32(buf, 0, &value) == 0) {
+		/* Users can't write negative values directly */
+		if (value < 0)
+			return -EINVAL;
+	} else {
 		if (!strcmp(buf, "auto") || !strcmp(buf, "auto\n"))
 			value = PM_QOS_LATENCY_TOLERANCE_NO_CONSTRAINT;
 		else if (!strcmp(buf, "any") || !strcmp(buf, "any\n"))
@@ -736,6 +740,17 @@ int pm_qos_sysfs_add_flags(struct device *dev)
 void pm_qos_sysfs_remove_flags(struct device *dev)
 {
 	sysfs_unmerge_group(&dev->kobj, &pm_qos_flags_attr_group);
+}
+
+int pm_qos_sysfs_add_latency_tolerance(struct device *dev)
+{
+	return sysfs_merge_group(&dev->kobj,
+				 &pm_qos_latency_tolerance_attr_group);
+}
+
+void pm_qos_sysfs_remove_latency_tolerance(struct device *dev)
+{
+	sysfs_unmerge_group(&dev->kobj, &pm_qos_latency_tolerance_attr_group);
 }
 
 void rpm_sysfs_remove(struct device *dev)

@@ -17,16 +17,11 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef STV0367_H
 #define STV0367_H
 
-#include <linux/kconfig.h>
 #include <linux/dvb/frontend.h>
 #include "dvb_frontend.h"
 
@@ -39,7 +34,7 @@ struct stv0367_config {
 	int clk_pol;
 };
 
-#if IS_ENABLED(CONFIG_DVB_STV0367)
+#if IS_REACHABLE(CONFIG_DVB_STV0367)
 extern struct
 dvb_frontend *stv0367ter_attach(const struct stv0367_config *config,
 					struct i2c_adapter *i2c);

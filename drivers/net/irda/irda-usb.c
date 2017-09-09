@@ -429,7 +429,7 @@ static netdev_tx_t irda_usb_hard_xmit(struct sk_buff *skb,
 			 * do an extra memcpy and increment packet counters...
 			 * Jean II */
 			irda_usb_change_speed_xbofs(self);
-			netdev->trans_start = jiffies;
+			netif_trans_update(netdev);
 			/* Will netif_wake_queue() in callback */
 			goto drop;
 		}
@@ -495,18 +495,12 @@ static netdev_tx_t irda_usb_hard_xmit(struct sk_buff *skb,
 		mtt = irda_get_mtt(skb);
 		if (mtt) {
 			int diff;
-			do_gettimeofday(&self->now);
-			diff = self->now.tv_usec - self->stamp.tv_usec;
+			diff = ktime_us_delta(ktime_get(), self->stamp);
 #ifdef IU_USB_MIN_RTT
 			/* Factor in USB delays -> Get rid of udelay() that
 			 * would be lost in the noise - Jean II */
 			diff += IU_USB_MIN_RTT;
 #endif /* IU_USB_MIN_RTT */
-			/* If the usec counter did wraparound, the diff will
-			 * go negative (tv_usec is a long), so we need to
-			 * correct it by one second. Jean II */
-			if (diff < 0)
-				diff += 1000000;
 
 		        /* Check if the mtt is larger than the time we have
 			 * already used by all the protocol processing
@@ -532,7 +526,7 @@ static netdev_tx_t irda_usb_hard_xmit(struct sk_buff *skb,
 		netdev->stats.tx_packets++;
                 netdev->stats.tx_bytes += skb->len;
 		
-		netdev->trans_start = jiffies;
+		netif_trans_update(netdev);
 	}
 	spin_unlock_irqrestore(&self->lock, flags);
 	
@@ -854,7 +848,9 @@ static void irda_usb_receive(struct urb *urb)
 		 * Jean II */
 		self->rx_defer_timer.function = irda_usb_rx_defer_expired;
 		self->rx_defer_timer.data = (unsigned long) urb;
-		mod_timer(&self->rx_defer_timer, jiffies + (10 * HZ / 1000));
+		mod_timer(&self->rx_defer_timer,
+			  jiffies + msecs_to_jiffies(10));
+
 		return;
 	}
 	
@@ -869,7 +865,7 @@ static void irda_usb_receive(struct urb *urb)
 	 * reduce the min turn time a bit since we will know
 	 * how much time we have used for protocol processing
 	 */
-        do_gettimeofday(&self->stamp);
+	self->stamp = ktime_get();
 
 	/* Check if we need to copy the data to a new skb or not.
 	 * For most frames, we use ZeroCopy and pass the already
@@ -1727,6 +1723,7 @@ static int irda_usb_probe(struct usb_interface *intf,
 	/* Don't change this buffer size and allocation without doing
 	 * some heavy and complete testing. Don't ask why :-(
 	 * Jean II */
+	ret = -ENOMEM;
 	self->speed_buff = kzalloc(IRDA_USB_SPEED_MTU, GFP_KERNEL);
 	if (!self->speed_buff)
 		goto err_out_3;

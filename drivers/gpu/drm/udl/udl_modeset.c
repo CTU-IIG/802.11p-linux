@@ -279,14 +279,6 @@ static void udl_crtc_dpms(struct drm_crtc *crtc, int mode)
 
 }
 
-static bool udl_crtc_mode_fixup(struct drm_crtc *crtc,
-				  const struct drm_display_mode *mode,
-				  struct drm_display_mode *adjusted_mode)
-
-{
-	return true;
-}
-
 #if 0
 static int
 udl_pipe_set_base_atomic(struct drm_crtc *crtc, struct drm_framebuffer *fb,
@@ -317,6 +309,8 @@ static int udl_crtc_mode_set(struct drm_crtc *crtc,
 	char *wrptr;
 	int color_depth = 0;
 
+	udl->crtc = crtc;
+
 	buf = (char *)udl->mode_buf;
 
 	/* for now we just clip 24 -> 16 - if we fix that fix this */
@@ -340,11 +334,11 @@ static int udl_crtc_mode_set(struct drm_crtc *crtc,
 
 	wrptr = udl_dummy_render(wrptr);
 
-	ufb->active_16 = true;
 	if (old_fb) {
 		struct udl_framebuffer *uold_fb = to_udl_fb(old_fb);
 		uold_fb->active_16 = false;
 	}
+	ufb->active_16 = true;
 	udl->mode_buf_len = wrptr - buf;
 
 	/* damage all of it */
@@ -373,11 +367,18 @@ static int udl_crtc_page_flip(struct drm_crtc *crtc,
 	struct drm_device *dev = crtc->dev;
 	unsigned long flags;
 
+	struct drm_framebuffer *old_fb = crtc->primary->fb;
+	if (old_fb) {
+		struct udl_framebuffer *uold_fb = to_udl_fb(old_fb);
+		uold_fb->active_16 = false;
+	}
+	ufb->active_16 = true;
+
 	udl_handle_damage(ufb, 0, 0, fb->width, fb->height);
 
 	spin_lock_irqsave(&dev->event_lock, flags);
 	if (event)
-		drm_send_vblank_event(dev, 0, event);
+		drm_crtc_send_vblank_event(crtc, event);
 	spin_unlock_irqrestore(&dev->event_lock, flags);
 	crtc->primary->fb = fb;
 
@@ -393,9 +394,8 @@ static void udl_crtc_commit(struct drm_crtc *crtc)
 	udl_crtc_dpms(crtc, DRM_MODE_DPMS_ON);
 }
 
-static struct drm_crtc_helper_funcs udl_helper_funcs = {
+static const struct drm_crtc_helper_funcs udl_helper_funcs = {
 	.dpms = udl_crtc_dpms,
-	.mode_fixup = udl_crtc_mode_fixup,
 	.mode_set = udl_crtc_mode_set,
 	.prepare = udl_crtc_prepare,
 	.commit = udl_crtc_commit,
@@ -443,8 +443,6 @@ int udl_modeset_init(struct drm_device *dev)
 
 	dev->mode_config.funcs = &udl_mode_funcs;
 
-	drm_mode_create_dirty_info_property(dev);
-
 	udl_crtc_init(dev);
 
 	encoder = udl_encoder_init(dev);
@@ -452,6 +450,18 @@ int udl_modeset_init(struct drm_device *dev)
 	udl_connector_init(dev, encoder);
 
 	return 0;
+}
+
+void udl_modeset_restore(struct drm_device *dev)
+{
+	struct udl_device *udl = dev->dev_private;
+	struct udl_framebuffer *ufb;
+
+	if (!udl->crtc || !udl->crtc->primary->fb)
+		return;
+	udl_crtc_commit(udl->crtc);
+	ufb = to_udl_fb(udl->crtc->primary->fb);
+	udl_handle_damage(ufb, 0, 0, ufb->base.width, ufb->base.height);
 }
 
 void udl_modeset_cleanup(struct drm_device *dev)

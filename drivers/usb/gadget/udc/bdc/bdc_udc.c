@@ -454,6 +454,7 @@ static int bdc_udc_set_selfpowered(struct usb_gadget *gadget,
 	unsigned long           flags;
 
 	dev_dbg(bdc->dev, "%s()\n", __func__);
+	gadget->is_selfpowered = (is_self != 0);
 	spin_lock_irqsave(&bdc->lock, flags);
 	if (!is_self)
 		bdc->devstatus |= 1 << USB_DEVICE_SELF_POWERED;
@@ -580,8 +581,13 @@ err0:
 
 void bdc_udc_exit(struct bdc *bdc)
 {
+	unsigned long flags;
+
 	dev_dbg(bdc->dev, "%s()\n", __func__);
+	spin_lock_irqsave(&bdc->lock, flags);
 	bdc_ep_disable(bdc->bdc_ep_array[1]);
+	spin_unlock_irqrestore(&bdc->lock, flags);
+
 	usb_del_gadget_udc(&bdc->gadget);
 	bdc_free_ep(bdc);
 }

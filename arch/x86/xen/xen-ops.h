@@ -10,6 +10,12 @@
 extern const char xen_hypervisor_callback[];
 extern const char xen_failsafe_callback[];
 
+void xen_sysenter_target(void);
+#ifdef CONFIG_X86_64
+void xen_syscall_target(void);
+void xen_syscall32_target(void);
+#endif
+
 extern void *xen_initial_gdt;
 
 struct trap_info;
@@ -29,13 +35,20 @@ void xen_build_mfn_list_list(void);
 void xen_setup_machphys_mapping(void);
 void xen_setup_kernel_pagetable(pgd_t *pgd, unsigned long max_pfn);
 void xen_reserve_top(void);
+void __init xen_reserve_special_pages(void);
+void __init xen_pt_check_e820(void);
 
 void xen_mm_pin_all(void);
 void xen_mm_unpin_all(void);
+#ifdef CONFIG_X86_64
+void __init xen_relocate_p2m(void);
+#endif
 
+bool __init xen_is_e820_reserved(phys_addr_t start, phys_addr_t size);
 unsigned long __ref xen_chk_extra_mem(unsigned long pfn);
 void __init xen_inv_extra_mem(void);
 void __init xen_remap_memory(void);
+phys_addr_t __init xen_find_free_area(phys_addr_t size);
 char * __init xen_memory_setup(void);
 char * xen_auto_xlated_memory_setup(void);
 void __init xen_arch_setup(void);
@@ -54,7 +67,7 @@ void xen_init_irq_ops(void);
 void xen_setup_timer(int cpu);
 void xen_setup_runstate_info(int cpu);
 void xen_teardown_timer(int cpu);
-cycle_t xen_clocksource_read(void);
+u64 xen_clocksource_read(void);
 void xen_setup_cpu_clockevents(void);
 void __init xen_init_time_ops(void);
 void __init xen_hvm_init_time_ops(void);
@@ -63,6 +76,7 @@ irqreturn_t xen_debug_interrupt(int irq, void *dev_id);
 
 bool xen_vcpu_stolen(int vcpu);
 
+void xen_vcpu_setup(int cpu);
 void xen_setup_vcpu_info_placement(void);
 
 #ifdef CONFIG_SMP
@@ -95,16 +109,14 @@ struct dom0_vga_console_info;
 
 #ifdef CONFIG_XEN_DOM0
 void __init xen_init_vga(const struct dom0_vga_console_info *, size_t size);
-void __init xen_init_apic(void);
 #else
 static inline void __init xen_init_vga(const struct dom0_vga_console_info *info,
 				       size_t size)
 {
 }
-static inline void __init xen_init_apic(void)
-{
-}
 #endif
+
+void __init xen_init_apic(void);
 
 #ifdef CONFIG_XEN_EFI
 extern void xen_efi_init(void);
@@ -128,12 +140,10 @@ DECL_ASM(void, xen_restore_fl_direct, unsigned long);
 
 /* These are not functions, and cannot be called normally */
 __visible void xen_iret(void);
-__visible void xen_sysexit(void);
 __visible void xen_sysret32(void);
 __visible void xen_sysret64(void);
 __visible void xen_adjust_exception_frame(void);
 
 extern int xen_panic_handler_init(void);
 
-void xen_pvh_secondary_vcpu_init(int cpu);
 #endif /* XEN_OPS_H */

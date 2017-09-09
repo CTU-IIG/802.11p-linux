@@ -43,29 +43,28 @@ void *module_alloc(unsigned long size)
 	int npages;
 
 	npages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-	pages = kmalloc(npages * sizeof(struct page *), GFP_KERNEL);
+	pages = kmalloc_array(npages, sizeof(*pages), GFP_KERNEL);
 	if (pages == NULL)
 		return NULL;
 	for (; i < npages; ++i) {
 		pages[i] = alloc_page(GFP_KERNEL | __GFP_HIGHMEM);
 		if (!pages[i])
-			goto error;
+			goto free_pages;
 	}
 
 	area = __get_vm_area(size, VM_ALLOC, MEM_MODULE_START, MEM_MODULE_END);
 	if (!area)
-		goto error;
+		goto free_pages;
 	area->nr_pages = npages;
 	area->pages = pages;
 
 	if (map_vm_area(area, prot_rwx, pages)) {
 		vunmap(area->addr);
-		goto error;
+		goto free_pages;
 	}
 
 	return area->addr;
-
-error:
+ free_pages:
 	while (--i >= 0)
 		__free_page(pages[i]);
 	kfree(pages);
@@ -74,7 +73,7 @@ error:
 
 
 /* Free memory returned from module_alloc */
-void module_free(struct module *mod, void *module_region)
+void module_memfree(void *module_region)
 {
 	vfree(module_region);
 
@@ -83,7 +82,7 @@ void module_free(struct module *mod, void *module_region)
 		     0, 0, 0, NULL, NULL, 0);
 
 	/*
-	 * FIXME: If module_region == mod->module_init, trim exception
+	 * FIXME: Add module_arch_freeing_init to trim exception
 	 * table entries.
 	 */
 }

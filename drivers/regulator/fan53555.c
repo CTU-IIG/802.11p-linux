@@ -65,6 +65,13 @@ enum {
 	FAN53555_CHIP_ID_03,
 	FAN53555_CHIP_ID_04,
 	FAN53555_CHIP_ID_05,
+	FAN53555_CHIP_ID_08 = 8,
+};
+
+/* IC mask revision */
+enum {
+	FAN53555_CHIP_REV_00 = 0x3,
+	FAN53555_CHIP_REV_13 = 0xf,
 };
 
 enum {
@@ -114,6 +121,22 @@ static int fan53555_set_suspend_voltage(struct regulator_dev *rdev, int uV)
 	return 0;
 }
 
+static int fan53555_set_suspend_enable(struct regulator_dev *rdev)
+{
+	struct fan53555_device_info *di = rdev_get_drvdata(rdev);
+
+	return regmap_update_bits(di->regmap, di->sleep_reg,
+				  VSEL_BUCK_EN, VSEL_BUCK_EN);
+}
+
+static int fan53555_set_suspend_disable(struct regulator_dev *rdev)
+{
+	struct fan53555_device_info *di = rdev_get_drvdata(rdev);
+
+	return regmap_update_bits(di->regmap, di->sleep_reg,
+				  VSEL_BUCK_EN, 0);
+}
+
 static int fan53555_set_mode(struct regulator_dev *rdev, unsigned int mode)
 {
 	struct fan53555_device_info *di = rdev_get_drvdata(rdev);
@@ -147,7 +170,7 @@ static unsigned int fan53555_get_mode(struct regulator_dev *rdev)
 		return REGULATOR_MODE_NORMAL;
 }
 
-static int slew_rates[] = {
+static const int slew_rates[] = {
 	64000,
 	32000,
 	16000,
@@ -179,9 +202,10 @@ static int fan53555_set_ramp(struct regulator_dev *rdev, int ramp)
 				  CTL_SLEW_MASK, regval << CTL_SLEW_SHIFT);
 }
 
-static struct regulator_ops fan53555_regulator_ops = {
+static const struct regulator_ops fan53555_regulator_ops = {
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
+	.set_voltage_time_sel = regulator_set_voltage_time_sel,
 	.map_voltage = regulator_map_voltage_linear,
 	.list_voltage = regulator_list_voltage_linear,
 	.set_suspend_voltage = fan53555_set_suspend_voltage,
@@ -191,6 +215,8 @@ static struct regulator_ops fan53555_regulator_ops = {
 	.set_mode = fan53555_set_mode,
 	.get_mode = fan53555_get_mode,
 	.set_ramp_delay = fan53555_set_ramp,
+	.set_suspend_enable = fan53555_set_suspend_enable,
+	.set_suspend_disable = fan53555_set_suspend_disable,
 };
 
 static int fan53555_voltages_setup_fairchild(struct fan53555_device_info *di)
@@ -198,9 +224,26 @@ static int fan53555_voltages_setup_fairchild(struct fan53555_device_info *di)
 	/* Init voltage range and step */
 	switch (di->chip_id) {
 	case FAN53555_CHIP_ID_00:
+		switch (di->chip_rev) {
+		case FAN53555_CHIP_REV_00:
+			di->vsel_min = 600000;
+			di->vsel_step = 10000;
+			break;
+		case FAN53555_CHIP_REV_13:
+			di->vsel_min = 800000;
+			di->vsel_step = 10000;
+			break;
+		default:
+			dev_err(di->dev,
+				"Chip ID %d with rev %d not supported!\n",
+				di->chip_id, di->chip_rev);
+			return -EINVAL;
+		}
+		break;
 	case FAN53555_CHIP_ID_01:
 	case FAN53555_CHIP_ID_03:
 	case FAN53555_CHIP_ID_05:
+	case FAN53555_CHIP_ID_08:
 		di->vsel_min = 600000;
 		di->vsel_step = 10000;
 		break;
@@ -296,7 +339,7 @@ static int fan53555_regulator_register(struct fan53555_device_info *di,
 	return PTR_ERR_OR_ZERO(di->rdev);
 }
 
-static struct regmap_config fan53555_regmap_config = {
+static const struct regmap_config fan53555_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 };
@@ -438,6 +481,7 @@ static const struct i2c_device_id fan53555_id[] = {
 	},
 	{ },
 };
+MODULE_DEVICE_TABLE(i2c, fan53555_id);
 
 static struct i2c_driver fan53555_regulator_driver = {
 	.driver = {

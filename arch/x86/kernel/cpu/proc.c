@@ -12,7 +12,8 @@ static void show_cpuinfo_core(struct seq_file *m, struct cpuinfo_x86 *c,
 {
 #ifdef CONFIG_SMP
 	seq_printf(m, "physical id\t: %d\n", c->phys_proc_id);
-	seq_printf(m, "siblings\t: %d\n", cpumask_weight(cpu_core_mask(cpu)));
+	seq_printf(m, "siblings\t: %d\n",
+		   cpumask_weight(topology_core_cpumask(cpu)));
 	seq_printf(m, "core id\t\t: %d\n", c->cpu_core_id);
 	seq_printf(m, "cpu cores\t: %d\n", c->booted_cores);
 	seq_printf(m, "apicid\t\t: %d\n", c->apicid);
@@ -30,14 +31,13 @@ static void show_cpuinfo_misc(struct seq_file *m, struct cpuinfo_x86 *c)
 		   "fpu\t\t: %s\n"
 		   "fpu_exception\t: %s\n"
 		   "cpuid level\t: %d\n"
-		   "wp\t\t: %s\n",
+		   "wp\t\t: yes\n",
 		   static_cpu_has_bug(X86_BUG_FDIV) ? "yes" : "no",
 		   static_cpu_has_bug(X86_BUG_F00F) ? "yes" : "no",
 		   static_cpu_has_bug(X86_BUG_COMA) ? "yes" : "no",
 		   static_cpu_has(X86_FEATURE_FPU) ? "yes" : "no",
 		   static_cpu_has(X86_FEATURE_FPU) ? "yes" : "no",
-		   c->cpuid_level,
-		   c->wp_works_ok ? "yes" : "no");
+		   c->cpuid_level);
 }
 #else
 static void show_cpuinfo_misc(struct seq_file *m, struct cpuinfo_x86 *c)

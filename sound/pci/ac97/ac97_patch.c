@@ -3093,7 +3093,7 @@ static int patch_cm9739(struct snd_ac97 * ac97)
 	/* set-up multi channel */
 	/* bit 14: 0 = SPDIF, 1 = EAPD */
 	/* bit 13: enable internal vref output for mic */
-	/* bit 12: disable center/lfe (swithable) */
+	/* bit 12: disable center/lfe (switchable) */
 	/* bit 10: disable surround/line (switchable) */
 	/* bit 9: mix 2 surround off */
 	/* bit 4: undocumented; 0 mutes the CM9739A, which defaults to 1 */
@@ -3347,6 +3347,33 @@ static int patch_cm9780(struct snd_ac97 *ac97)
 		val |= 0x1; /* SPDI_EN */
 		snd_ac97_write_cache(ac97, AC97_CM9780_SPDIF, val);
 	}
+
+	return 0;
+}
+
+/*
+ * VIA VT1613 codec
+ */
+static const struct snd_kcontrol_new snd_ac97_controls_vt1613[] = {
+AC97_SINGLE("DC Offset removal", 0x5a, 10, 1, 0),
+};
+
+static int patch_vt1613_specific(struct snd_ac97 *ac97)
+{
+	return patch_build_controls(ac97, &snd_ac97_controls_vt1613[0],
+				    ARRAY_SIZE(snd_ac97_controls_vt1613));
+};
+
+static const struct snd_ac97_build_ops patch_vt1613_ops = {
+	.build_specific	= patch_vt1613_specific
+};
+
+static int patch_vt1613(struct snd_ac97 *ac97)
+{
+	ac97->build_ops = &patch_vt1613_ops;
+
+	ac97->flags |= AC97_HAS_NO_VIDEO;
+	ac97->caps |= AC97_BC_HEADPHONE;
 
 	return 0;
 }

@@ -16,6 +16,7 @@
 #include <linux/of_platform.h>
 #include <linux/io.h>
 #include <linux/rtc/sirfsoc_rtciobrg.h>
+#include <asm/outercache.h>
 #include <asm/suspend.h>
 #include <asm/hardware/cache-l2x0.h>
 
@@ -53,7 +54,7 @@ static void sirfsoc_set_sleep_mode(u32 mode)
 
 static int sirfsoc_pre_suspend_power_off(void)
 {
-	u32 wakeup_entry = virt_to_phys(cpu_resume);
+	u32 wakeup_entry = __pa_symbol(cpu_resume);
 
 	sirfsoc_rtc_iobrg_writel(wakeup_entry, sirfsoc_pwrc_base +
 		SIRFSOC_PWRC_SCRATCH_PAD1);

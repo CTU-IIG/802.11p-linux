@@ -17,10 +17,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/kernel.h>
@@ -59,7 +55,7 @@ struct stv0367cab_state {
 	int locked;			/* channel found		*/
 	u32 freq_khz;			/* found frequency (in kHz)	*/
 	u32 symbol_rate;		/* found symbol rate (in Bds)	*/
-	fe_spectral_inversion_t	spect_inv; /* Spectrum Inversion	*/
+	enum fe_spectral_inversion spect_inv; /* Spectrum Inversion	*/
 };
 
 struct stv0367ter_state {
@@ -67,10 +63,10 @@ struct stv0367ter_state {
 	enum stv0367_ter_signal_type state;
 	enum stv0367_ter_if_iq_mode if_iq_mode;
 	enum stv0367_ter_mode mode;/* mode 2K or 8K */
-	fe_guard_interval_t guard;
+	enum fe_guard_interval guard;
 	enum stv0367_ter_hierarchy hierarchy;
 	u32 frequency;
-	fe_spectral_inversion_t  sense; /*  current search spectrum */
+	enum fe_spectral_inversion sense; /*  current search spectrum */
 	u8  force; /* force mode/guard */
 	u8  bw; /* channel width 6, 7 or 8 in MHz */
 	u8  pBW; /* channel width used during previous lock */
@@ -791,11 +787,13 @@ int stv0367_writeregs(struct stv0367_state *state, u16 reg, u8 *data, int len)
 	memcpy(buf + 2, data, len);
 
 	if (i2cdebug)
-		printk(KERN_DEBUG "%s: %02x: %02x\n", __func__, reg, buf[2]);
+		printk(KERN_DEBUG "%s: [%02x] %02x: %02x\n", __func__,
+			state->config->demod_address, reg, buf[2]);
 
 	ret = i2c_transfer(state->i2c, &msg, 1);
 	if (ret != 1)
-		printk(KERN_ERR "%s: i2c write error!\n", __func__);
+		printk(KERN_ERR "%s: i2c write error! ([%02x] %02x: %02x)\n",
+			__func__, state->config->demod_address, reg, buf[2]);
 
 	return (ret != 1) ? -EREMOTEIO : 0;
 }
@@ -829,10 +827,12 @@ static u8 stv0367_readreg(struct stv0367_state *state, u16 reg)
 
 	ret = i2c_transfer(state->i2c, msg, 2);
 	if (ret != 2)
-		printk(KERN_ERR "%s: i2c read error\n", __func__);
+		printk(KERN_ERR "%s: i2c read error ([%02x] %02x: %02x)\n",
+			__func__, state->config->demod_address, reg, b1[0]);
 
 	if (i2cdebug)
-		printk(KERN_DEBUG "%s: %02x: %02x\n", __func__, reg, b1[0]);
+		printk(KERN_DEBUG "%s: [%02x] %02x: %02x\n", __func__,
+			state->config->demod_address, reg, b1[0]);
 
 	return b1[0];
 }
@@ -1550,6 +1550,11 @@ static int stv0367ter_init(struct dvb_frontend *fe)
 
 	switch (state->config->xtal) {
 		/*set internal freq to 53.125MHz */
+	case 16000000:
+		stv0367_writereg(state, R367TER_PLLMDIV, 0x2);
+		stv0367_writereg(state, R367TER_PLLNDIV, 0x1b);
+		stv0367_writereg(state, R367TER_PLLSETUP, 0x18);
+		break;
 	case 25000000:
 		stv0367_writereg(state, R367TER_PLLMDIV, 0xa);
 		stv0367_writereg(state, R367TER_PLLNDIV, 0x55);
@@ -1929,9 +1934,9 @@ static int stv0367ter_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
 	return 0;
 }
 
-static int stv0367ter_get_frontend(struct dvb_frontend *fe)
+static int stv0367ter_get_frontend(struct dvb_frontend *fe,
+				   struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct stv0367_state *state = fe->demodulator_priv;
 	struct stv0367ter_state *ter_state = state->ter_state;
 	enum stv0367_ter_mode mode;
@@ -2074,7 +2079,8 @@ static int stv0367ter_status(struct dvb_frontend *fe)
 	return locked;
 }
 #endif
-static int stv0367ter_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int stv0367ter_read_status(struct dvb_frontend *fe,
+				  enum fe_status *status)
 {
 	struct stv0367_state *state = fe->demodulator_priv;
 
@@ -2262,7 +2268,7 @@ static void stv0367_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops stv0367ter_ops = {
+static const struct dvb_frontend_ops stv0367ter_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		.name			= "ST STV0367 DVB-T",
@@ -2716,7 +2722,8 @@ static u32 stv0367cab_GetSymbolRate(struct stv0367_state *state, u32 mclk_hz)
 	return regsym;
 }
 
-static int stv0367cab_read_status(struct dvb_frontend *fe, fe_status_t *status)
+static int stv0367cab_read_status(struct dvb_frontend *fe,
+				  enum fe_status *status)
 {
 	struct stv0367_state *state = fe->demodulator_priv;
 
@@ -3135,9 +3142,9 @@ static int stv0367cab_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int stv0367cab_get_frontend(struct dvb_frontend *fe)
+static int stv0367cab_get_frontend(struct dvb_frontend *fe,
+				   struct dtv_frontend_properties *p)
 {
-	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct stv0367_state *state = fe->demodulator_priv;
 	struct stv0367cab_state *cab_state = state->cab_state;
 
@@ -3379,7 +3386,7 @@ static int stv0367cab_read_ucblcks(struct dvb_frontend *fe, u32 *ucblocks)
 	return 0;
 };
 
-static struct dvb_frontend_ops stv0367cab_ops = {
+static const struct dvb_frontend_ops stv0367cab_ops = {
 	.delsys = { SYS_DVBC_ANNEX_A },
 	.info = {
 		.name = "ST STV0367 DVB-C",

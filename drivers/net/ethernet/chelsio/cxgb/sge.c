@@ -1605,7 +1605,7 @@ int t1_poll(struct napi_struct *napi, int budget)
 	int work_done = process_responses(adapter, budget);
 
 	if (likely(work_done < budget)) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		writel(adapter->sge->respQ.cidx,
 		       adapter->regs + A_SG_SLEEPING);
 	}
@@ -1664,8 +1664,7 @@ static int t1_sge_tx(struct sk_buff *skb, struct adapter *adapter,
 	struct cmdQ *q = &sge->cmdQ[qid];
 	unsigned int credits, pidx, genbit, count, use_sched_skb = 0;
 
-	if (!spin_trylock(&q->lock))
-		return NETDEV_TX_LOCKED;
+	spin_lock(&q->lock);
 
 	reclaim_completed_tx(sge, q);
 
@@ -1860,9 +1859,9 @@ netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 	cpl->iff = dev->if_port;
 
-	if (vlan_tx_tag_present(skb)) {
+	if (skb_vlan_tag_present(skb)) {
 		cpl->vlan_valid = 1;
-		cpl->vlan = htons(vlan_tx_tag_get(skb));
+		cpl->vlan = htons(skb_vlan_tag_get(skb));
 		st->vlan_insert++;
 	} else
 		cpl->vlan_valid = 0;

@@ -26,7 +26,7 @@
 #include <linux/poll.h>
 #include <linux/mutex.h>
 #include <linux/wait.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 #include <pcmcia/cistpl.h>
@@ -331,7 +331,7 @@ static ssize_t cm4040_write(struct file *filp, const char __user *buf,
 	}
 
 	if ((count < 5) || (count > READ_WRITE_BUFFER_SIZE)) {
-		DEBUGP(2, dev, "<- cm4040_write buffersize=%Zd < 5\n", count);
+		DEBUGP(2, dev, "<- cm4040_write buffersize=%zd < 5\n", count);
 		return -EIO;
 	}
 
@@ -532,9 +532,8 @@ static int reader_config(struct pcmcia_device *link, int devno)
 
 	fail_rc = pcmcia_enable_device(link);
 	if (fail_rc != 0) {
-		dev_printk(KERN_INFO, &link->dev,
-			   "pcmcia_enable_device failed 0x%x\n",
-			   fail_rc);
+		dev_info(&link->dev, "pcmcia_enable_device failed 0x%x\n",
+			 fail_rc);
 		goto cs_release;
 	}
 

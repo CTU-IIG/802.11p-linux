@@ -12,6 +12,8 @@
  * of the License.
  */
 
+#include <errno.h>
+#include <inttypes.h>
 #include <traceevent/event-parse.h>
 
 #include "builtin.h"
@@ -23,14 +25,16 @@
 #include "util/cache.h"
 #include "util/evlist.h"
 #include "util/evsel.h"
+#include <linux/kernel.h>
 #include <linux/rbtree.h>
+#include <linux/time64.h>
 #include "util/symbol.h"
+#include "util/thread.h"
 #include "util/callchain.h"
-#include "util/strlist.h"
 
 #include "perf.h"
 #include "util/header.h"
-#include "util/parse-options.h"
+#include <subcmd/parse-options.h>
 #include "util/parse-events.h"
 #include "util/event.h"
 #include "util/session.h"
@@ -61,10 +65,11 @@ struct timechart {
 				tasks_only,
 				with_backtrace,
 				topology;
+	bool			force;
 	/* IO related settings */
-	u64			io_events;
 	bool			io_only,
 				skip_eagain;
+	u64			io_events;
 	u64			min_time,
 				merge_dist;
 };
@@ -488,7 +493,7 @@ static const char *cat_backtrace(union perf_event *event,
 	if (!chain)
 		goto exit;
 
-	if (perf_event__preprocess_sample(event, machine, &al, sample) < 0) {
+	if (machine__resolve(machine, &al, sample) < 0) {
 		fprintf(stderr, "problem processing %d event, skipping it.\n",
 			event->header.type);
 		goto exit;
@@ -522,7 +527,7 @@ static const char *cat_backtrace(union perf_event *event,
 				 * Discard all.
 				 */
 				zfree(&p);
-				goto exit;
+				goto exit_put;
 			}
 			continue;
 		}
@@ -537,7 +542,8 @@ static const char *cat_backtrace(union perf_event *event,
 		else
 			fprintf(f, "..... %016" PRIx64 "\n", ip);
 	}
-
+exit_put:
+	addr_location__put(&al);
 exit:
 	fclose(f);
 
@@ -1286,9 +1292,9 @@ static void draw_process_bars(struct timechart *tchart)
 			if (c->comm) {
 				char comm[256];
 				if (c->total_time > 5000000000) /* 5 seconds */
-					sprintf(comm, "%s:%i (%2.2fs)", c->comm, p->pid, c->total_time / 1000000000.0);
+					sprintf(comm, "%s:%i (%2.2fs)", c->comm, p->pid, c->total_time / (double)NSEC_PER_SEC);
 				else
-					sprintf(comm, "%s:%i (%3.1fms)", c->comm, p->pid, c->total_time / 1000000.0);
+					sprintf(comm, "%s:%i (%3.1fms)", c->comm, p->pid, c->total_time / (double)NSEC_PER_MSEC);
 
 				svg_text(Y, c->start_time, comm);
 			}
@@ -1598,6 +1604,7 @@ static int __cmd_timechart(struct timechart *tchart, const char *output_name)
 	struct perf_data_file file = {
 		.path = input_name,
 		.mode = PERF_DATA_MODE_READ,
+		.force = tchart->force,
 	};
 
 	struct perf_session *session = perf_session__new(&file, false,
@@ -1623,7 +1630,7 @@ static int __cmd_timechart(struct timechart *tchart, const char *output_name)
 		goto out_delete;
 	}
 
-	ret = perf_session__process_events(session, &tchart->tool);
+	ret = perf_session__process_events(session);
 	if (ret)
 		goto out_delete;
 
@@ -1634,7 +1641,7 @@ static int __cmd_timechart(struct timechart *tchart, const char *output_name)
 	write_svg_file(tchart, output_name);
 
 	pr_info("Written %2.1f seconds of trace to %s.\n",
-		(tchart->last_time - tchart->first_time) / 1000000000.0, output_name);
+		(tchart->last_time - tchart->first_time) / (double)NSEC_PER_SEC, output_name);
 out_delete:
 	perf_session__delete(session);
 	return ret;
@@ -1769,7 +1776,7 @@ static int timechart__io_record(int argc, const char **argv)
 	for (i = 0; i < (unsigned int)argc; i++)
 		*p++ = argv[i];
 
-	return cmd_record(rec_argc, rec_argv, NULL);
+	return cmd_record(rec_argc, rec_argv);
 }
 
 
@@ -1860,7 +1867,7 @@ static int timechart__record(struct timechart *tchart, int argc, const char **ar
 	for (j = 0; j < (unsigned int)argc; j++)
 		*p++ = argv[j];
 
-	return cmd_record(rec_argc, rec_argv, NULL);
+	return cmd_record(rec_argc, rec_argv);
 }
 
 static int
@@ -1898,10 +1905,10 @@ parse_time(const struct option *opt, const char *arg, int __maybe_unused unset)
 	if (sscanf(arg, "%" PRIu64 "%cs", value, &unit) > 0) {
 		switch (unit) {
 		case 'm':
-			*value *= 1000000;
+			*value *= NSEC_PER_MSEC;
 			break;
 		case 'u':
-			*value *= 1000;
+			*value *= NSEC_PER_USEC;
 			break;
 		case 'n':
 			break;
@@ -1913,8 +1920,7 @@ parse_time(const struct option *opt, const char *arg, int __maybe_unused unset)
 	return 0;
 }
 
-int cmd_timechart(int argc, const char **argv,
-		  const char *prefix __maybe_unused)
+int cmd_timechart(int argc, const char **argv)
 {
 	struct timechart tchart = {
 		.tool = {
@@ -1925,10 +1931,15 @@ int cmd_timechart(int argc, const char **argv,
 			.ordered_events	 = true,
 		},
 		.proc_num = 15,
-		.min_time = 1000000,
+		.min_time = NSEC_PER_MSEC,
 		.merge_dist = 1000,
 	};
 	const char *output_name = "output.svg";
+	const struct option timechart_common_options[] = {
+	OPT_BOOLEAN('P', "power-only", &tchart.power_only, "output power data only"),
+	OPT_BOOLEAN('T', "tasks-only", &tchart.tasks_only, "output processes data only"),
+	OPT_END()
+	};
 	const struct option timechart_options[] = {
 	OPT_STRING('i', "input", &input_name, "file", "input file name"),
 	OPT_STRING('o', "output", &output_name, "file", "output file name"),
@@ -1936,14 +1947,12 @@ int cmd_timechart(int argc, const char **argv,
 	OPT_CALLBACK(0, "highlight", NULL, "duration or task name",
 		      "highlight tasks. Pass duration in ns or process name.",
 		       parse_highlight),
-	OPT_BOOLEAN('P', "power-only", &tchart.power_only, "output power data only"),
-	OPT_BOOLEAN('T', "tasks-only", &tchart.tasks_only,
-		    "output processes data only"),
 	OPT_CALLBACK('p', "process", NULL, "process",
 		      "process selector. Pass a pid or process name.",
 		       parse_process),
-	OPT_STRING(0, "symfs", &symbol_conf.symfs, "directory",
-		    "Look for files with symbols relative to this directory"),
+	OPT_CALLBACK(0, "symfs", NULL, "directory",
+		     "Look for files with symbols relative to this directory",
+		     symbol__config_symfs),
 	OPT_INTEGER('n', "proc-num", &tchart.proc_num,
 		    "min. number of tasks to print"),
 	OPT_BOOLEAN('t', "topology", &tchart.topology,
@@ -1956,28 +1965,26 @@ int cmd_timechart(int argc, const char **argv,
 	OPT_CALLBACK(0, "io-merge-dist", &tchart.merge_dist, "time",
 		     "merge events that are merge-dist us apart",
 		     parse_time),
-	OPT_END()
+	OPT_BOOLEAN('f', "force", &tchart.force, "don't complain, do it"),
+	OPT_PARENT(timechart_common_options),
 	};
-	const char * const timechart_usage[] = {
+	const char * const timechart_subcommands[] = { "record", NULL };
+	const char *timechart_usage[] = {
 		"perf timechart [<options>] {record}",
 		NULL
 	};
-
 	const struct option timechart_record_options[] = {
-	OPT_BOOLEAN('P', "power-only", &tchart.power_only, "output power data only"),
-	OPT_BOOLEAN('T', "tasks-only", &tchart.tasks_only,
-		    "output processes data only"),
 	OPT_BOOLEAN('I', "io-only", &tchart.io_only,
 		    "record only IO data"),
 	OPT_BOOLEAN('g', "callchain", &tchart.with_backtrace, "record callchain"),
-	OPT_END()
+	OPT_PARENT(timechart_common_options),
 	};
 	const char * const timechart_record_usage[] = {
 		"perf timechart record [<options>]",
 		NULL
 	};
-	argc = parse_options(argc, argv, timechart_options, timechart_usage,
-			PARSE_OPT_STOP_AT_NON_OPTION);
+	argc = parse_options_subcommand(argc, argv, timechart_options, timechart_subcommands,
+			timechart_usage, PARSE_OPT_STOP_AT_NON_OPTION);
 
 	if (tchart.power_only && tchart.tasks_only) {
 		pr_err("-P and -T options cannot be used at the same time.\n");

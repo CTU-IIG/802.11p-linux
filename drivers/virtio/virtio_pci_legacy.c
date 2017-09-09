@@ -19,14 +19,6 @@
 
 #include "virtio_pci_common.h"
 
-/* Qumranet donated their vendor ID for devices 0x1000 thru 0x10FF. */
-static const struct pci_device_id virtio_pci_id_table[] = {
-	{ PCI_DEVICE(0x1af4, PCI_ANY_ID) },
-	{ 0 }
-};
-
-MODULE_DEVICE_TABLE(pci, virtio_pci_id_table);
-
 /* virtio config->get_features() implementation */
 static u64 vp_get_features(struct virtio_device *vdev)
 {
@@ -127,7 +119,6 @@ static struct virtqueue *setup_vq(struct virtio_pci_device *vp_dev,
 				  u16 msix_vec)
 {
 	struct virtqueue *vq;
-	unsigned long size;
 	u16 num;
 	int err;
 
@@ -139,26 +130,18 @@ static struct virtqueue *setup_vq(struct virtio_pci_device *vp_dev,
 	if (!num || ioread32(vp_dev->ioaddr + VIRTIO_PCI_QUEUE_PFN))
 		return ERR_PTR(-ENOENT);
 
-	info->num = num;
 	info->msix_vector = msix_vec;
 
-	size = PAGE_ALIGN(vring_size(num, VIRTIO_PCI_VRING_ALIGN));
-	info->queue = alloc_pages_exact(size, GFP_KERNEL|__GFP_ZERO);
-	if (info->queue == NULL)
+	/* create the vring */
+	vq = vring_create_virtqueue(index, num,
+				    VIRTIO_PCI_VRING_ALIGN, &vp_dev->vdev,
+				    true, false, vp_notify, callback, name);
+	if (!vq)
 		return ERR_PTR(-ENOMEM);
 
 	/* activate the queue */
-	iowrite32(virt_to_phys(info->queue) >> VIRTIO_PCI_QUEUE_ADDR_SHIFT,
+	iowrite32(virtqueue_get_desc_addr(vq) >> VIRTIO_PCI_QUEUE_ADDR_SHIFT,
 		  vp_dev->ioaddr + VIRTIO_PCI_QUEUE_PFN);
-
-	/* create the vring */
-	vq = vring_new_virtqueue(index, info->num,
-				 VIRTIO_PCI_VRING_ALIGN, &vp_dev->vdev,
-				 true, info->queue, vp_notify, callback, name);
-	if (!vq) {
-		err = -ENOMEM;
-		goto out_activate_queue;
-	}
 
 	vq->priv = (void __force *)vp_dev->ioaddr + VIRTIO_PCI_QUEUE_NOTIFY;
 
@@ -167,17 +150,15 @@ static struct virtqueue *setup_vq(struct virtio_pci_device *vp_dev,
 		msix_vec = ioread16(vp_dev->ioaddr + VIRTIO_MSI_QUEUE_VECTOR);
 		if (msix_vec == VIRTIO_MSI_NO_VECTOR) {
 			err = -EBUSY;
-			goto out_assign;
+			goto out_deactivate;
 		}
 	}
 
 	return vq;
 
-out_assign:
-	vring_del_virtqueue(vq);
-out_activate_queue:
+out_deactivate:
 	iowrite32(0, vp_dev->ioaddr + VIRTIO_PCI_QUEUE_PFN);
-	free_pages_exact(info->queue, size);
+	vring_del_virtqueue(vq);
 	return ERR_PTR(err);
 }
 
@@ -185,7 +166,6 @@ static void del_vq(struct virtio_pci_vq_info *info)
 {
 	struct virtqueue *vq = info->vq;
 	struct virtio_pci_device *vp_dev = to_vp_device(vq->vdev);
-	unsigned long size;
 
 	iowrite16(vq->index, vp_dev->ioaddr + VIRTIO_PCI_QUEUE_SEL);
 
@@ -196,13 +176,10 @@ static void del_vq(struct virtio_pci_vq_info *info)
 		ioread8(vp_dev->ioaddr + VIRTIO_PCI_ISR);
 	}
 
-	vring_del_virtqueue(vq);
-
 	/* Select and deactivate the queue */
 	iowrite32(0, vp_dev->ioaddr + VIRTIO_PCI_QUEUE_PFN);
 
-	size = PAGE_ALIGN(vring_size(info->num, VIRTIO_PCI_VRING_ALIGN));
-	free_pages_exact(info->queue, size);
+	vring_del_virtqueue(vq);
 }
 
 static const struct virtio_config_ops virtio_pci_config_ops = {
@@ -217,14 +194,14 @@ static const struct virtio_config_ops virtio_pci_config_ops = {
 	.finalize_features = vp_finalize_features,
 	.bus_name	= vp_bus_name,
 	.set_vq_affinity = vp_set_vq_affinity,
+	.get_vq_affinity = vp_get_vq_affinity,
 };
 
 /* the PCI probing function */
-static int virtio_pci_probe(struct pci_dev *pci_dev,
-			    const struct pci_device_id *id)
+int virtio_pci_legacy_probe(struct virtio_pci_device *vp_dev)
 {
-	struct virtio_pci_device *vp_dev;
-	int err;
+	struct pci_dev *pci_dev = vp_dev->pci_dev;
+	int rc;
 
 	/* We only own devices >= 0x1000 and <= 0x103f: leave the rest. */
 	if (pci_dev->device < 0x1000 || pci_dev->device > 0x103f)
@@ -236,40 +213,31 @@ static int virtio_pci_probe(struct pci_dev *pci_dev,
 		return -ENODEV;
 	}
 
-	/* allocate our structure and fill it out */
-	vp_dev = kzalloc(sizeof(struct virtio_pci_device), GFP_KERNEL);
-	if (vp_dev == NULL)
-		return -ENOMEM;
-
-	vp_dev->vdev.dev.parent = &pci_dev->dev;
-	vp_dev->vdev.dev.release = virtio_pci_release_dev;
-	vp_dev->vdev.config = &virtio_pci_config_ops;
-	vp_dev->pci_dev = pci_dev;
-	INIT_LIST_HEAD(&vp_dev->virtqueues);
-	spin_lock_init(&vp_dev->lock);
-
-	/* Disable MSI/MSIX to bring device to a known good state. */
-	pci_msi_off(pci_dev);
-
-	/* enable the device */
-	err = pci_enable_device(pci_dev);
-	if (err)
-		goto out;
-
-	err = pci_request_regions(pci_dev, "virtio-pci");
-	if (err)
-		goto out_enable_device;
-
-	vp_dev->ioaddr = pci_iomap(pci_dev, 0, 0);
-	if (vp_dev->ioaddr == NULL) {
-		err = -ENOMEM;
-		goto out_req_regions;
+	rc = dma_set_mask(&pci_dev->dev, DMA_BIT_MASK(64));
+	if (rc) {
+		rc = dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(32));
+	} else {
+		/*
+		 * The virtio ring base address is expressed as a 32-bit PFN,
+		 * with a page size of 1 << VIRTIO_PCI_QUEUE_ADDR_SHIFT.
+		 */
+		dma_set_coherent_mask(&pci_dev->dev,
+				DMA_BIT_MASK(32 + VIRTIO_PCI_QUEUE_ADDR_SHIFT));
 	}
 
-	vp_dev->isr = vp_dev->ioaddr + VIRTIO_PCI_ISR;
+	if (rc)
+		dev_warn(&pci_dev->dev, "Failed to enable 64-bit or 32-bit DMA.  Trying to continue, but this might not work.\n");
 
-	pci_set_drvdata(pci_dev, vp_dev);
-	pci_set_master(pci_dev);
+	rc = pci_request_region(pci_dev, 0, "virtio-pci-legacy");
+	if (rc)
+		return rc;
+
+	rc = -ENOMEM;
+	vp_dev->ioaddr = pci_iomap(pci_dev, 0, 0);
+	if (!vp_dev->ioaddr)
+		goto err_iomap;
+
+	vp_dev->isr = vp_dev->ioaddr + VIRTIO_PCI_ISR;
 
 	/* we use the subsystem vendor/device id as the virtio vendor/device
 	 * id.  this allows us to use the same PCI vendor/device id for all
@@ -278,49 +246,23 @@ static int virtio_pci_probe(struct pci_dev *pci_dev,
 	vp_dev->vdev.id.vendor = pci_dev->subsystem_vendor;
 	vp_dev->vdev.id.device = pci_dev->subsystem_device;
 
+	vp_dev->vdev.config = &virtio_pci_config_ops;
+
 	vp_dev->config_vector = vp_config_vector;
 	vp_dev->setup_vq = setup_vq;
 	vp_dev->del_vq = del_vq;
 
-	/* finally register the virtio device */
-	err = register_virtio_device(&vp_dev->vdev);
-	if (err)
-		goto out_set_drvdata;
-
 	return 0;
 
-out_set_drvdata:
-	pci_iounmap(pci_dev, vp_dev->ioaddr);
-out_req_regions:
-	pci_release_regions(pci_dev);
-out_enable_device:
-	pci_disable_device(pci_dev);
-out:
-	kfree(vp_dev);
-	return err;
+err_iomap:
+	pci_release_region(pci_dev, 0);
+	return rc;
 }
 
-static void virtio_pci_remove(struct pci_dev *pci_dev)
+void virtio_pci_legacy_remove(struct virtio_pci_device *vp_dev)
 {
-	struct virtio_pci_device *vp_dev = pci_get_drvdata(pci_dev);
+	struct pci_dev *pci_dev = vp_dev->pci_dev;
 
-	unregister_virtio_device(&vp_dev->vdev);
-
-	vp_del_vqs(&vp_dev->vdev);
 	pci_iounmap(pci_dev, vp_dev->ioaddr);
-	pci_release_regions(pci_dev);
-	pci_disable_device(pci_dev);
-	kfree(vp_dev);
+	pci_release_region(pci_dev, 0);
 }
-
-static struct pci_driver virtio_pci_driver = {
-	.name		= "virtio-pci",
-	.id_table	= virtio_pci_id_table,
-	.probe		= virtio_pci_probe,
-	.remove		= virtio_pci_remove,
-#ifdef CONFIG_PM_SLEEP
-	.driver.pm	= &virtio_pci_pm_ops,
-#endif
-};
-
-module_pci_driver(virtio_pci_driver);

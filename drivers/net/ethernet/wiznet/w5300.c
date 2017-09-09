@@ -10,7 +10,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/kconfig.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/platform_device.h>
@@ -63,7 +62,7 @@ MODULE_LICENSE("GPL");
 #define   IDR_W5300		  0x5300  /* =0x5300 for WIZnet W5300 */
 #define W5300_S0_MR		0x0200	/* S0 Mode Register */
 #define   S0_MR_CLOSED		  0x0000  /* Close mode */
-#define   S0_MR_MACRAW		  0x0004  /* MAC RAW mode (promiscous) */
+#define   S0_MR_MACRAW		  0x0004  /* MAC RAW mode (promiscuous) */
 #define   S0_MR_MACRAW_MF	  0x0044  /* MAC RAW mode (filtered) */
 #define W5300_S0_CR		0x0202	/* S0 Command Register */
 #define   S0_CR_OPEN		  0x0001  /* OPEN command */
@@ -362,7 +361,7 @@ static void w5300_tx_timeout(struct net_device *ndev)
 	w5300_hw_reset(priv);
 	w5300_hw_start(priv);
 	ndev->stats.tx_errors++;
-	ndev->trans_start = jiffies;
+	netif_trans_update(ndev);
 	netif_wake_queue(ndev);
 }
 
@@ -418,9 +417,9 @@ static int w5300_napi_poll(struct napi_struct *napi, int budget)
 	}
 
 	if (rx_count < budget) {
+		napi_complete_done(napi, rx_count);
 		w5300_write(priv, W5300_IMR, IR_S0);
 		mmiowb();
-		napi_complete(napi);
 	}
 
 	return rx_count;
@@ -537,7 +536,6 @@ static const struct net_device_ops w5300_netdev_ops = {
 	.ndo_set_rx_mode	= w5300_set_rx_mode,
 	.ndo_set_mac_address	= w5300_set_macaddr,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 };
 
 static int w5300_hw_probe(struct platform_device *pdev)

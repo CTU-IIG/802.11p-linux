@@ -19,7 +19,7 @@
  *
  */
 
-#include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
@@ -1148,7 +1148,7 @@ static int snd_atiixp_spdif_close(struct snd_pcm_substream *substream)
 }
 
 /* AC97 playback */
-static struct snd_pcm_ops snd_atiixp_playback_ops = {
+static const struct snd_pcm_ops snd_atiixp_playback_ops = {
 	.open =		snd_atiixp_playback_open,
 	.close =	snd_atiixp_playback_close,
 	.ioctl =	snd_pcm_lib_ioctl,
@@ -1160,7 +1160,7 @@ static struct snd_pcm_ops snd_atiixp_playback_ops = {
 };
 
 /* AC97 capture */
-static struct snd_pcm_ops snd_atiixp_capture_ops = {
+static const struct snd_pcm_ops snd_atiixp_capture_ops = {
 	.open =		snd_atiixp_capture_open,
 	.close =	snd_atiixp_capture_close,
 	.ioctl =	snd_pcm_lib_ioctl,
@@ -1172,7 +1172,7 @@ static struct snd_pcm_ops snd_atiixp_capture_ops = {
 };
 
 /* SPDIF playback */
-static struct snd_pcm_ops snd_atiixp_spdif_ops = {
+static const struct snd_pcm_ops snd_atiixp_spdif_ops = {
 	.open =		snd_atiixp_spdif_open,
 	.close =	snd_atiixp_spdif_close,
 	.ioctl =	snd_pcm_lib_ioctl,
@@ -1219,7 +1219,7 @@ static struct ac97_pcm atiixp_pcm_defs[] = {
 	},
 };
 
-static struct atiixp_dma_ops snd_atiixp_playback_dma_ops = {
+static const struct atiixp_dma_ops snd_atiixp_playback_dma_ops = {
 	.type = ATI_DMA_PLAYBACK,
 	.llp_offset = ATI_REG_OUT_DMA_LINKPTR,
 	.dt_cur = ATI_REG_OUT_DMA_DT_CUR,
@@ -1228,7 +1228,7 @@ static struct atiixp_dma_ops snd_atiixp_playback_dma_ops = {
 	.flush_dma = atiixp_out_flush_dma,
 };
 	
-static struct atiixp_dma_ops snd_atiixp_capture_dma_ops = {
+static const struct atiixp_dma_ops snd_atiixp_capture_dma_ops = {
 	.type = ATI_DMA_CAPTURE,
 	.llp_offset = ATI_REG_IN_DMA_LINKPTR,
 	.dt_cur = ATI_REG_IN_DMA_DT_CUR,
@@ -1237,7 +1237,7 @@ static struct atiixp_dma_ops snd_atiixp_capture_dma_ops = {
 	.flush_dma = atiixp_in_flush_dma,
 };
 	
-static struct atiixp_dma_ops snd_atiixp_spdif_dma_ops = {
+static const struct atiixp_dma_ops snd_atiixp_spdif_dma_ops = {
 	.type = ATI_DMA_SPDIF,
 	.llp_offset = ATI_REG_SPDF_DMA_LINKPTR,
 	.dt_cur = ATI_REG_SPDF_DMA_DT_CUR,
@@ -1390,7 +1390,7 @@ static irqreturn_t snd_atiixp_interrupt(int irq, void *dev_id)
  * ac97 mixer section
  */
 
-static struct ac97_quirk ac97_quirks[] = {
+static const struct ac97_quirk ac97_quirks[] = {
 	{
 		.subvendor = 0x103c,
 		.subdevice = 0x006b,
@@ -1474,7 +1474,6 @@ static int snd_atiixp_mixer_new(struct atiixp *chip, int clock,
  */
 static int snd_atiixp_suspend(struct device *dev)
 {
-	struct pci_dev *pci = to_pci_dev(dev);
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct atiixp *chip = card->private_data;
 	int i;
@@ -1492,28 +1491,14 @@ static int snd_atiixp_suspend(struct device *dev)
 		snd_ac97_suspend(chip->ac97[i]);
 	snd_atiixp_aclink_down(chip);
 	snd_atiixp_chip_stop(chip);
-
-	pci_disable_device(pci);
-	pci_save_state(pci);
-	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
 static int snd_atiixp_resume(struct device *dev)
 {
-	struct pci_dev *pci = to_pci_dev(dev);
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct atiixp *chip = card->private_data;
 	int i;
-
-	pci_set_power_state(pci, PCI_D0);
-	pci_restore_state(pci);
-	if (pci_enable_device(pci) < 0) {
-		dev_err(dev, "pci_enable_device failed, disabling device\n");
-		snd_card_disconnect(card);
-		return -EIO;
-	}
-	pci_set_master(pci);
 
 	snd_atiixp_aclink_reset(chip);
 	snd_atiixp_chip_start(chip);
@@ -1545,7 +1530,6 @@ static SIMPLE_DEV_PM_OPS(snd_atiixp_pm, snd_atiixp_suspend, snd_atiixp_resume);
 #endif /* CONFIG_PM_SLEEP */
 
 
-#ifdef CONFIG_PROC_FS
 /*
  * proc interface for register dump
  */
@@ -1567,9 +1551,6 @@ static void snd_atiixp_proc_init(struct atiixp *chip)
 	if (! snd_card_proc_new(chip->card, "atiixp", &entry))
 		snd_info_set_text_ops(entry, chip, snd_atiixp_proc_read);
 }
-#else /* !CONFIG_PROC_FS */
-#define snd_atiixp_proc_init(chip)
-#endif
 
 
 /*
@@ -1585,8 +1566,7 @@ static int snd_atiixp_free(struct atiixp *chip)
       __hw_end:
 	if (chip->irq >= 0)
 		free_irq(chip->irq, chip);
-	if (chip->remap_addr)
-		iounmap(chip->remap_addr);
+	iounmap(chip->remap_addr);
 	pci_release_regions(chip->pci);
 	pci_disable_device(chip->pci);
 	kfree(chip);

@@ -34,7 +34,7 @@
 #include <linux/bootmem.h>
 
 #include <asm/pat.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/pci_x86.h>
 #include <asm/io_apic.h>
 
@@ -216,7 +216,7 @@ static void pcibios_allocate_bridge_resources(struct pci_dev *dev)
 			continue;
 		if (r->parent)	/* Already allocated */
 			continue;
-		if (!r->start || pci_claim_resource(dev, idx) < 0) {
+		if (!r->start || pci_claim_bridge_resource(dev, idx) < 0) {
 			/*
 			 * Something is wrong with the region.
 			 * Invalidate the resource to prevent
@@ -398,7 +398,7 @@ void __init pcibios_resource_survey(void)
 	list_for_each_entry(bus, &pci_root_buses, node)
 		pcibios_allocate_resources(bus, 1);
 
-	e820_reserve_resources_late();
+	e820__reserve_resources_late();
 	/*
 	 * Insert the IO APIC resources after PCI initialization has
 	 * occurred to handle IO APICS that are mapped in on a BAR in
@@ -429,12 +429,12 @@ int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
  	 * Caller can followup with UC MINUS request and add a WC mtrr if there
  	 * is a free mtrr slot.
  	 */
-	if (!pat_enabled && write_combine)
+	if (!pat_enabled() && write_combine)
 		return -EINVAL;
 
-	if (pat_enabled && write_combine)
+	if (pat_enabled() && write_combine)
 		prot |= cachemode2protval(_PAGE_CACHE_MODE_WC);
-	else if (pat_enabled || boot_cpu_data.x86 > 3)
+	else if (pat_enabled() || boot_cpu_data.x86 > 3)
 		/*
 		 * ioremap() and ioremap_nocache() defaults to UC MINUS for now.
 		 * To avoid attribute conflicts, request UC MINUS here

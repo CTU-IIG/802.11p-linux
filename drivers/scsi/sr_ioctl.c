@@ -10,7 +10,7 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_dbg.h>
@@ -187,17 +187,8 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 	struct scsi_device *SDev;
 	struct scsi_sense_hdr sshdr;
 	int result, err = 0, retries = 0;
-	struct request_sense *sense = cgc->sense;
 
 	SDev = cd->device;
-
-	if (!sense) {
-		sense = kmalloc(SCSI_SENSE_BUFFERSIZE, GFP_KERNEL);
-		if (!sense) {
-			err = -ENOMEM;
-			goto out;
-		}
-	}
 
       retry:
 	if (!scsi_block_when_processing_errors(SDev)) {
@@ -205,12 +196,10 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 		goto out;
 	}
 
-	memset(sense, 0, sizeof(*sense));
 	result = scsi_execute(SDev, cgc->cmd, cgc->data_direction,
-			      cgc->buffer, cgc->buflen, (char *)sense,
-			      cgc->timeout, IOCTL_RETRIES, 0, NULL);
-
-	scsi_normalize_sense((char *)sense, sizeof(*sense), &sshdr);
+			      cgc->buffer, cgc->buflen,
+			      (unsigned char *)cgc->sense, &sshdr,
+			      cgc->timeout, IOCTL_RETRIES, 0, 0, NULL);
 
 	/* Minimal error checking.  Ignore cases we know about, and report the rest. */
 	if (driver_byte(result) != 0) {
@@ -245,9 +234,6 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 				sr_printk(KERN_INFO, cd,
 					  "CDROM not ready.  Make sure there "
 					  "is a disc in the drive.\n");
-#ifdef DEBUG
-			scsi_print_sense_hdr(cd->device, cd->cdi.name, &sshdr);
-#endif
 			err = -ENOMEDIUM;
 			break;
 		case ILLEGAL_REQUEST:
@@ -256,24 +242,14 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 			    sshdr.ascq == 0x00)
 				/* sense: Invalid command operation code */
 				err = -EDRIVE_CANT_DO_THIS;
-#ifdef DEBUG
-			__scsi_print_command(cgc->cmd, CDROM_PACKET_SIZE);
-			scsi_print_sense_hdr(cd->device, cd->cdi.name, &sshdr);
-#endif
 			break;
 		default:
-			sr_printk(KERN_ERR, cd,
-				  "CDROM (ioctl) error, command: ");
-			__scsi_print_command(cgc->cmd, CDROM_PACKET_SIZE);
-			scsi_print_sense_hdr(cd->device, cd->cdi.name, &sshdr);
 			err = -EIO;
 		}
 	}
 
 	/* Wake up a process waiting for device */
       out:
-	if (!cgc->sense)
-		kfree(sense);
 	cgc->stat = err;
 	return err;
 }

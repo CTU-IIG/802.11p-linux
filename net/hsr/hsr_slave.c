@@ -12,6 +12,7 @@
 #include "hsr_slave.h"
 #include <linux/etherdevice.h>
 #include <linux/if_arp.h>
+#include <linux/if_vlan.h>
 #include "hsr_main.h"
 #include "hsr_device.h"
 #include "hsr_forward.h"
@@ -22,6 +23,7 @@ static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
 	struct hsr_port *port;
+	u16 protocol;
 
 	if (!skb_mac_header_was_set(skb)) {
 		WARN_ONCE(1, "%s: skb invalid", __func__);
@@ -37,7 +39,8 @@ static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 		goto finish_consume;
 	}
 
-	if (eth_hdr(skb)->h_proto != htons(ETH_P_PRP))
+	protocol = eth_hdr(skb)->h_proto;
+	if (protocol != htons(ETH_P_PRP) && protocol != htons(ETH_P_HSR))
 		goto finish_pass;
 
 	skb_push(skb, ETH_HLEN);
@@ -79,7 +82,7 @@ static int hsr_check_dev_ok(struct net_device *dev)
 		return -EINVAL;
 	}
 
-	if (dev->priv_flags & IFF_802_1Q_VLAN) {
+	if (is_vlan_dev(dev)) {
 		netdev_info(dev, "HSR on top of VLAN is not yet supported in this driver.\n");
 		return -EINVAL;
 	}
@@ -181,8 +184,10 @@ void hsr_del_port(struct hsr_port *port)
 	list_del_rcu(&port->port_list);
 
 	if (port != master) {
-		netdev_update_features(master->dev);
-		dev_set_mtu(master->dev, hsr_get_max_mtu(hsr));
+		if (master != NULL) {
+			netdev_update_features(master->dev);
+			dev_set_mtu(master->dev, hsr_get_max_mtu(hsr));
+		}
 		netdev_rx_handler_unregister(port->dev);
 		dev_set_promiscuity(port->dev, -1);
 	}
@@ -192,5 +197,7 @@ void hsr_del_port(struct hsr_port *port)
 	 */
 
 	synchronize_rcu();
-	dev_put(port->dev);
+
+	if (port != master)
+		dev_put(port->dev);
 }

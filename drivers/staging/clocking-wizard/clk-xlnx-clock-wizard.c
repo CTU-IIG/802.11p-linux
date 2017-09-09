@@ -19,6 +19,7 @@
  */
 
 #include <linux/platform_device.h>
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/slab.h>
 #include <linux/io.h>
@@ -31,8 +32,8 @@
 
 #define WZRD_CLK_CFG_REG(n)	(0x200 + 4 * (n))
 
-#define WZRD_CLkOUT0_FRAC_EN	BIT(18)
-#define WZRD_CLkFBOUT_FRAC_EN	BIT(26)
+#define WZRD_CLKOUT0_FRAC_EN	BIT(18)
+#define WZRD_CLKFBOUT_FRAC_EN	BIT(26)
 
 #define WZRD_CLKFBOUT_MULT_SHIFT	8
 #define WZRD_CLKFBOUT_MULT_MASK		(0xff << WZRD_CLKFBOUT_MULT_SHIFT)
@@ -67,9 +68,10 @@ struct clk_wzrd {
 	struct clk *axi_clk;
 	struct clk *clks_internal[wzrd_clk_int_max];
 	struct clk *clkout[WZRD_NUM_OUTPUTS];
-	int speed_grade;
+	unsigned int speed_grade;
 	bool suspended;
 };
+
 #define to_clk_wzrd(_nb) container_of(_nb, struct clk_wzrd, nb)
 
 /* maximum frequencies for input/output clocks per speed grade */
@@ -91,8 +93,10 @@ static int clk_wzrd_clk_notifier(struct notifier_block *nb, unsigned long event,
 
 	if (ndata->clk == clk_wzrd->clk_in1)
 		max = clk_wzrd_max_freq[clk_wzrd->speed_grade - 1];
-	if (ndata->clk == clk_wzrd->axi_clk)
+	else if (ndata->clk == clk_wzrd->axi_clk)
 		max = WZRD_ACLK_MAX_FREQ;
+	else
+		return NOTIFY_DONE;	/* should never happen */
 
 	switch (event) {
 	case PRE_RATE_CHANGE:
@@ -192,9 +196,9 @@ static int clk_wzrd_probe(struct platform_device *pdev)
 
 	/* we don't support fractional div/mul yet */
 	reg = readl(clk_wzrd->base + WZRD_CLK_CFG_REG(0)) &
-		    WZRD_CLkFBOUT_FRAC_EN;
+		    WZRD_CLKFBOUT_FRAC_EN;
 	reg |= readl(clk_wzrd->base + WZRD_CLK_CFG_REG(2)) &
-		     WZRD_CLkOUT0_FRAC_EN;
+		     WZRD_CLKOUT0_FRAC_EN;
 	if (reg)
 		dev_warn(&pdev->dev, "fractional div/mul not supported\n");
 
@@ -239,6 +243,7 @@ static int clk_wzrd_probe(struct platform_device *pdev)
 	/* register div per output */
 	for (i = WZRD_NUM_OUTPUTS - 1; i >= 0 ; i--) {
 		const char *clkout_name;
+
 		if (of_property_read_string_index(np, "clock-output-names", i,
 						  &clkout_name)) {
 			dev_err(&pdev->dev,

@@ -56,7 +56,7 @@
 #include <net/tcp_states.h>
 #include <net/net_namespace.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /* Configuration Variables */
 static unsigned char ipxcfg_max_hops = 16;
@@ -1168,11 +1168,10 @@ static int ipxitf_ioctl(unsigned int cmd, void __user *arg)
 		sipx->sipx_network	= ipxif->if_netnum;
 		memcpy(sipx->sipx_node, ipxif->if_node,
 			sizeof(sipx->sipx_node));
-		rc = -EFAULT;
-		if (copy_to_user(arg, &ifr, sizeof(ifr)))
-			break;
-		ipxitf_put(ipxif);
 		rc = 0;
+		if (copy_to_user(arg, &ifr, sizeof(ifr)))
+			rc = -EFAULT;
+		ipxitf_put(ipxif);
 		break;
 	}
 	case SIOCAIPXITFCRT:
@@ -1347,7 +1346,7 @@ static int ipx_create(struct net *net, struct socket *sock, int protocol,
 		goto out;
 
 	rc = -ENOMEM;
-	sk = sk_alloc(net, PF_IPX, GFP_KERNEL, &ipx_proto);
+	sk = sk_alloc(net, PF_IPX, GFP_KERNEL, &ipx_proto, kern);
 	if (!sk)
 		goto out;
 
@@ -1688,8 +1687,7 @@ out:
 	return rc;
 }
 
-static int ipx_sendmsg(struct kiocb *iocb, struct socket *sock,
-	struct msghdr *msg, size_t len)
+static int ipx_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 {
 	struct sock *sk = sock->sk;
 	struct ipx_sock *ipxs = ipx_sk(sk);
@@ -1754,8 +1752,8 @@ out:
 }
 
 
-static int ipx_recvmsg(struct kiocb *iocb, struct socket *sock,
-		struct msghdr *msg, size_t size, int flags)
+static int ipx_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+		       int flags)
 {
 	struct sock *sk = sock->sk;
 	struct ipx_sock *ipxs = ipx_sk(sk);
@@ -1810,7 +1808,7 @@ static int ipx_recvmsg(struct kiocb *iocb, struct socket *sock,
 	rc = skb_copy_datagram_msg(skb, sizeof(struct ipxhdr), msg, copied);
 	if (rc)
 		goto out_free;
-	if (skb->tstamp.tv64)
+	if (skb->tstamp)
 		sk->sk_stamp = skb->tstamp;
 
 	if (sipx) {

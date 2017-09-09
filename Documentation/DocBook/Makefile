@@ -6,18 +6,27 @@
 # To add a new book the only step required is to add the book to the
 # list of DOCBOOKS.
 
-DOCBOOKS := z8530book.xml device-drivers.xml \
-	    kernel-hacking.xml kernel-locking.xml deviceiobook.xml \
-	    writing_usb_driver.xml networking.xml \
-	    kernel-api.xml filesystems.xml lsm.xml usb.xml kgdb.xml \
-	    gadget.xml libata.xml mtdnand.xml librs.xml rapidio.xml \
-	    genericirq.xml s390-drivers.xml uio-howto.xml scsi.xml \
-	    80211.xml debugobjects.xml sh.xml regulator.xml \
-	    alsa-driver-api.xml writing-an-alsa-driver.xml \
-	    tracepoint.xml drm.xml media_api.xml w1.xml \
-	    writing_musb_glue_layer.xml crypto-API.xml
+DOCBOOKS := z8530book.xml  \
+	    kernel-hacking.xml kernel-locking.xml \
+	    networking.xml \
+	    filesystems.xml lsm.xml kgdb.xml \
+	    libata.xml mtdnand.xml librs.xml rapidio.xml \
+	    s390-drivers.xml scsi.xml \
+	    sh.xml w1.xml
 
-include Documentation/DocBook/media/Makefile
+ifeq ($(DOCBOOKS),)
+
+# Skip DocBook build if the user explicitly requested no DOCBOOKS.
+.DEFAULT:
+	@echo "  SKIP    DocBook $@ target (DOCBOOKS=\"\" specified)."
+else
+ifneq ($(SPHINXDIRS),)
+
+# Skip DocBook build if the user explicitly requested a sphinx dir
+.DEFAULT:
+	@echo "  SKIP    DocBook $@ target (SPHINXDIRS specified)."
+else
+
 
 ###
 # The build process is as follows (targets):
@@ -33,10 +42,6 @@ PDF_METHOD	= $(prefer-db2x)
 PS_METHOD	= $(prefer-db2x)
 
 
-###
-# The targets that may be used.
-PHONY += xmldocs sgmldocs psdocs pdfdocs htmldocs mandocs installmandocs cleandocs
-
 targets += $(DOCBOOKS)
 BOOKS := $(addprefix $(obj)/,$(DOCBOOKS))
 xmldocs: $(BOOKS)
@@ -50,22 +55,37 @@ pdfdocs: $(PDF)
 
 HTML := $(sort $(patsubst %.xml, %.html, $(BOOKS)))
 htmldocs: $(HTML)
-	$(call build_main_index)
-	$(call build_images)
-	$(call install_media_images)
+	$(call cmd,build_main_index)
 
 MAN := $(patsubst %.xml, %.9, $(BOOKS))
 mandocs: $(MAN)
-	$(if $(wildcard $(obj)/man/*.9),gzip -f $(obj)/man/*.9)
+	find $(obj)/man -name '*.9' | xargs gzip -nf
+
+# Default location for installed man pages
+export INSTALL_MAN_PATH = $(objtree)/usr
 
 installmandocs: mandocs
-	mkdir -p /usr/local/man/man9/
-	install $(obj)/man/*.9.gz /usr/local/man/man9/
+	mkdir -p $(INSTALL_MAN_PATH)/man/man9/
+	find $(obj)/man -name '*.9.gz' -printf '%h %f\n' | \
+		sort -k 2 -k 1 | uniq -f 1 | sed -e 's: :/:' | \
+		xargs install -m 644 -t $(INSTALL_MAN_PATH)/man/man9/
+
+# no-op for the DocBook toolchain
+epubdocs:
+latexdocs:
+linkcheckdocs:
 
 ###
 #External programs used
-KERNELDOC = $(srctree)/scripts/kernel-doc
-DOCPROC   = $(objtree)/scripts/docproc
+KERNELDOCXMLREF = $(srctree)/scripts/kernel-doc-xml-ref
+KERNELDOC       = $(srctree)/scripts/kernel-doc
+DOCPROC         = $(objtree)/scripts/docproc
+CHECK_LC_CTYPE = $(objtree)/scripts/check-lc_ctype
+
+# Use a fixed encoding - UTF-8 if the C library has support built-in
+# or ASCII if not
+LC_CTYPE := $(call try-run, LC_CTYPE=C.UTF-8 $(CHECK_LC_CTYPE),C.UTF-8,C)
+export LC_CTYPE
 
 XMLTOFLAGS = -m $(srctree)/$(src)/stylesheet.xsl
 XMLTOFLAGS += --skip-validation
@@ -89,7 +109,7 @@ define rule_docproc
         ) > $(dir $@).$(notdir $@).cmd
 endef
 
-%.xml: %.tmpl $(KERNELDOC) $(DOCPROC) FORCE
+%.xml: %.tmpl $(KERNELDOC) $(DOCPROC) $(KERNELDOCXMLREF) FORCE
 	$(call if_changed_rule,docproc)
 
 # Tell kbuild to always build the programs
@@ -130,7 +150,8 @@ quiet_cmd_db2pdf = PDF     $@
 
 index = index.html
 main_idx = $(obj)/$(index)
-build_main_index = rm -rf $(main_idx); \
+quiet_cmd_build_main_index = HTML    $(main_idx)
+      cmd_build_main_index = rm -rf $(main_idx); \
 		   echo '<h1>Linux Kernel HTML Documentation</h1>' >> $(main_idx) && \
 		   echo '<h2>Kernel Version: $(KERNELVERSION)</h2>' >> $(main_idx) && \
 		   cat $(HTML) >> $(main_idx)
@@ -140,7 +161,20 @@ quiet_cmd_db2html = HTML    $@
 		echo '<a HREF="$(patsubst %.html,%,$(notdir $@))/index.html"> \
 		$(patsubst %.html,%,$(notdir $@))</a><p>' > $@
 
-%.html:	%.xml
+###
+# Rules to create an aux XML and .db, and use them to re-process the DocBook XML
+# to fill internal hyperlinks
+       gen_aux_xml = :
+ quiet_gen_aux_xml = echo '  XMLREF  $@'
+silent_gen_aux_xml = :
+%.aux.xml: %.xml
+	@$($(quiet)gen_aux_xml)
+	@rm -rf $@
+	@(cat $< | egrep "^<refentry id" | egrep -o "\".*\"" | cut -f 2 -d \" > $<.db)
+	@$(KERNELDOCXMLREF) -db $<.db $< > $@
+.PRECIOUS: %.aux.xml
+
+%.html:	%.aux.xml
 	@(which xmlto > /dev/null 2>&1) || \
 	 (echo "*** You need to install xmlto ***"; \
 	  exit 1)
@@ -150,12 +184,12 @@ quiet_cmd_db2html = HTML    $@
             cp $(PNG-$(basename $(notdir $@))) $(patsubst %.html,%,$@); fi
 
 quiet_cmd_db2man = MAN     $@
-      cmd_db2man = if grep -q refentry $<; then xmlto man $(XMLTOFLAGS) -o $(obj)/man $< ; fi
+      cmd_db2man = if grep -q refentry $<; then xmlto man $(XMLTOFLAGS) -o $(obj)/man/$(*F) $< ; fi
 %.9 : %.xml
 	@(which xmlto > /dev/null 2>&1) || \
 	 (echo "*** You need to install xmlto ***"; \
 	  exit 1)
-	$(Q)mkdir -p $(obj)/man
+	$(Q)mkdir -p $(obj)/man/$(*F)
 	$(call cmd,db2man)
 	@touch $@
 
@@ -194,39 +228,55 @@ silent_gen_xml = :
 	       -e "s/>/\\&gt;/g";     \
 	   echo "</programlisting>")  > $@
 
+endif # DOCBOOKS=""
+endif # SPHINDIR=...
+
 ###
 # Help targets as used by the top-level makefile
 dochelp:
-	@echo  ' Linux kernel internal documentation in different formats:'
+	@echo  ' Linux kernel internal documentation in different formats (DocBook):'
 	@echo  '  htmldocs        - HTML'
 	@echo  '  pdfdocs         - PDF'
 	@echo  '  psdocs          - Postscript'
 	@echo  '  xmldocs         - XML DocBook'
 	@echo  '  mandocs         - man pages'
-	@echo  '  installmandocs  - install man pages generated by mandocs'
+	@echo  '  installmandocs  - install man pages generated by mandocs to INSTALL_MAN_PATH'; \
+	 echo  '                    (default: $(INSTALL_MAN_PATH))'; \
+	 echo  ''
 	@echo  '  cleandocs       - clean all generated DocBook files'
+	@echo
+	@echo  '  make DOCBOOKS="s1.xml s2.xml" [target] Generate only docs s1.xml s2.xml'
+	@echo  '  valid values for DOCBOOKS are: $(DOCBOOKS)'
+	@echo
+	@echo  "  make DOCBOOKS=\"\" [target] Don't generate docs from Docbook"
+	@echo  '     This is useful to generate only the ReST docs (Sphinx)'
+
 
 ###
 # Temporary files left by various tools
 clean-files := $(DOCBOOKS) \
-	$(patsubst %.xml, %.dvi,  $(DOCBOOKS)) \
-	$(patsubst %.xml, %.aux,  $(DOCBOOKS)) \
-	$(patsubst %.xml, %.tex,  $(DOCBOOKS)) \
-	$(patsubst %.xml, %.log,  $(DOCBOOKS)) \
-	$(patsubst %.xml, %.out,  $(DOCBOOKS)) \
-	$(patsubst %.xml, %.ps,   $(DOCBOOKS)) \
-	$(patsubst %.xml, %.pdf,  $(DOCBOOKS)) \
-	$(patsubst %.xml, %.html, $(DOCBOOKS)) \
-	$(patsubst %.xml, %.9,    $(DOCBOOKS)) \
+	$(patsubst %.xml, %.dvi,     $(DOCBOOKS)) \
+	$(patsubst %.xml, %.aux,     $(DOCBOOKS)) \
+	$(patsubst %.xml, %.tex,     $(DOCBOOKS)) \
+	$(patsubst %.xml, %.log,     $(DOCBOOKS)) \
+	$(patsubst %.xml, %.out,     $(DOCBOOKS)) \
+	$(patsubst %.xml, %.ps,      $(DOCBOOKS)) \
+	$(patsubst %.xml, %.pdf,     $(DOCBOOKS)) \
+	$(patsubst %.xml, %.html,    $(DOCBOOKS)) \
+	$(patsubst %.xml, %.9,       $(DOCBOOKS)) \
+	$(patsubst %.xml, %.aux.xml, $(DOCBOOKS)) \
+	$(patsubst %.xml, %.xml.db,  $(DOCBOOKS)) \
+	$(patsubst %.xml, %.xml,     $(DOCBOOKS)) \
+	$(patsubst %.xml, .%.xml.cmd, $(DOCBOOKS)) \
 	$(index)
 
 clean-dirs := $(patsubst %.xml,%,$(DOCBOOKS)) man
 
-cleandocs: cleanmediadocs
+cleandocs:
 	$(Q)rm -f $(call objectify, $(clean-files))
 	$(Q)rm -rf $(call objectify, $(clean-dirs))
 
 # Declare the contents of the .PHONY variable as phony.  We keep that
-# information in a variable se we can use it in if_changed and friends.
+# information in a variable so we can use it in if_changed and friends.
 
 .PHONY: $(PHONY)

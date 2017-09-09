@@ -60,7 +60,7 @@ static struct fb_var_screeninfo pmagbafb_defined = {
 	.left_margin	= 116,
 	.right_margin	= 12,
 	.upper_margin	= 34,
-	.lower_margin	= 12,
+	.lower_margin	= 0,
 	.hsync_len	= 128,
 	.vsync_len	= 3,
 	.sync		= FB_SYNC_ON_GREEN,
@@ -129,7 +129,7 @@ static struct fb_ops pmagbafb_ops = {
 /*
  * Turn the hardware cursor off.
  */
-static void __init pmagbafb_erase_cursor(struct fb_info *info)
+static void pmagbafb_erase_cursor(struct fb_info *info)
 {
 	struct pmagbafb_par *par = info->par;
 

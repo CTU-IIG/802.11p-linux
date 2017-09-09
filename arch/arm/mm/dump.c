@@ -18,6 +18,7 @@
 #include <linux/seq_file.h>
 
 #include <asm/fixmap.h>
+#include <asm/memory.h>
 #include <asm/pgtable.h>
 
 struct addr_marker {
@@ -31,8 +32,8 @@ static struct addr_marker address_markers[] = {
 	{ 0,			"vmalloc() Area" },
 	{ VMALLOC_END,		"vmalloc() End" },
 	{ FIXADDR_START,	"Fixmap Area" },
-	{ CONFIG_VECTORS_BASE,	"Vectors" },
-	{ CONFIG_VECTORS_BASE + PAGE_SIZE * 2, "Vectors End" },
+	{ VECTORS_BASE,	"Vectors" },
+	{ VECTORS_BASE + PAGE_SIZE * 2, "Vectors End" },
 	{ -1,			NULL },
 };
 
@@ -220,9 +221,6 @@ static void note_page(struct pg_state *st, unsigned long addr, unsigned level, u
 	static const char units[] = "KMGTPE";
 	u64 prot = val & pg_level[level].mask;
 
-	if (addr < USER_PGTABLES_CEILING)
-		return;
-
 	if (!st->level) {
 		st->level = level;
 		st->current_prot = prot;
@@ -308,15 +306,13 @@ static void walk_pgd(struct seq_file *m)
 	pgd_t *pgd = swapper_pg_dir;
 	struct pg_state st;
 	unsigned long addr;
-	unsigned i, pgdoff = USER_PGTABLES_CEILING / PGDIR_SIZE;
+	unsigned i;
 
 	memset(&st, 0, sizeof(st));
 	st.seq = m;
 	st.marker = address_markers;
 
-	pgd += pgdoff;
-
-	for (i = pgdoff; i < PTRS_PER_PGD; i++, pgd++) {
+	for (i = 0; i < PTRS_PER_PGD; i++, pgd++) {
 		addr = i * PGDIR_SIZE;
 		if (!pgd_none(*pgd)) {
 			walk_pud(&st, pgd, addr);

@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2016 Oracle. All rights reserved.
  * Copyright (c) 2005-2006 Network Appliance, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -47,287 +48,173 @@
 
 #define RPCDBG_FACILITY	RPCDBG_SVCXPRT
 
-/*
- * Decodes a read chunk list. The expected format is as follows:
- *    descrim  : xdr_one
- *    position : u32 offset into XDR stream
- *    handle   : u32 RKEY
- *    . . .
- *  end-of-list: xdr_zero
- */
-static u32 *decode_read_list(u32 *va, u32 *vaend)
+static __be32 *xdr_check_read_list(__be32 *p, __be32 *end)
 {
-	struct rpcrdma_read_chunk *ch = (struct rpcrdma_read_chunk *)va;
+	__be32 *next;
 
-	while (ch->rc_discrim != xdr_zero) {
-		if (((unsigned long)ch + sizeof(struct rpcrdma_read_chunk)) >
-		    (unsigned long)vaend) {
-			dprintk("svcrdma: vaend=%p, ch=%p\n", vaend, ch);
+	while (*p++ != xdr_zero) {
+		next = p + rpcrdma_readchunk_maxsz - 1;
+		if (next > end)
 			return NULL;
-		}
-		ch++;
+		p = next;
 	}
-	return (u32 *)&ch->rc_position;
+	return p;
 }
 
-/*
- * Determine number of chunks and total bytes in chunk list. The chunk
- * list has already been verified to fit within the RPCRDMA header.
+static __be32 *xdr_check_write_list(__be32 *p, __be32 *end)
+{
+	__be32 *next;
+
+	while (*p++ != xdr_zero) {
+		next = p + 1 + be32_to_cpup(p) * rpcrdma_segment_maxsz;
+		if (next > end)
+			return NULL;
+		p = next;
+	}
+	return p;
+}
+
+static __be32 *xdr_check_reply_chunk(__be32 *p, __be32 *end)
+{
+	__be32 *next;
+
+	if (*p++ != xdr_zero) {
+		next = p + 1 + be32_to_cpup(p) * rpcrdma_segment_maxsz;
+		if (next > end)
+			return NULL;
+		p = next;
+	}
+	return p;
+}
+
+/**
+ * svc_rdma_xdr_decode_req - Parse incoming RPC-over-RDMA header
+ * @rq_arg: Receive buffer
+ *
+ * On entry, xdr->head[0].iov_base points to first byte in the
+ * RPC-over-RDMA header.
+ *
+ * On successful exit, head[0] points to first byte past the
+ * RPC-over-RDMA header. For RDMA_MSG, this is the RPC message.
+ * The length of the RPC-over-RDMA header is returned.
  */
-void svc_rdma_rcl_chunk_counts(struct rpcrdma_read_chunk *ch,
-			       int *ch_count, int *byte_count)
+int svc_rdma_xdr_decode_req(struct xdr_buf *rq_arg)
 {
-	/* compute the number of bytes represented by read chunks */
-	*byte_count = 0;
-	*ch_count = 0;
-	for (; ch->rc_discrim != 0; ch++) {
-		*byte_count = *byte_count + ntohl(ch->rc_target.rs_length);
-		*ch_count = *ch_count + 1;
-	}
-}
-
-/*
- * Decodes a write chunk list. The expected format is as follows:
- *    descrim  : xdr_one
- *    nchunks  : <count>
- *       handle   : u32 RKEY              ---+
- *       length   : u32 <len of segment>     |
- *       offset   : remove va                + <count>
- *       . . .                               |
- *                                        ---+
- */
-static u32 *decode_write_list(u32 *va, u32 *vaend)
-{
-	unsigned long start, end;
-	int nchunks;
-
-	struct rpcrdma_write_array *ary =
-		(struct rpcrdma_write_array *)va;
-
-	/* Check for not write-array */
-	if (ary->wc_discrim == xdr_zero)
-		return (u32 *)&ary->wc_nchunks;
-
-	if ((unsigned long)ary + sizeof(struct rpcrdma_write_array) >
-	    (unsigned long)vaend) {
-		dprintk("svcrdma: ary=%p, vaend=%p\n", ary, vaend);
-		return NULL;
-	}
-	nchunks = ntohl(ary->wc_nchunks);
-
-	start = (unsigned long)&ary->wc_array[0];
-	end = (unsigned long)vaend;
-	if (nchunks < 0 ||
-	    nchunks > (SIZE_MAX - start) / sizeof(struct rpcrdma_write_chunk) ||
-	    (start + (sizeof(struct rpcrdma_write_chunk) * nchunks)) > end) {
-		dprintk("svcrdma: ary=%p, wc_nchunks=%d, vaend=%p\n",
-			ary, nchunks, vaend);
-		return NULL;
-	}
-	/*
-	 * rs_length is the 2nd 4B field in wc_target and taking its
-	 * address skips the list terminator
-	 */
-	return (u32 *)&ary->wc_array[nchunks].wc_target.rs_length;
-}
-
-static u32 *decode_reply_array(u32 *va, u32 *vaend)
-{
-	unsigned long start, end;
-	int nchunks;
-	struct rpcrdma_write_array *ary =
-		(struct rpcrdma_write_array *)va;
-
-	/* Check for no reply-array */
-	if (ary->wc_discrim == xdr_zero)
-		return (u32 *)&ary->wc_nchunks;
-
-	if ((unsigned long)ary + sizeof(struct rpcrdma_write_array) >
-	    (unsigned long)vaend) {
-		dprintk("svcrdma: ary=%p, vaend=%p\n", ary, vaend);
-		return NULL;
-	}
-	nchunks = ntohl(ary->wc_nchunks);
-
-	start = (unsigned long)&ary->wc_array[0];
-	end = (unsigned long)vaend;
-	if (nchunks < 0 ||
-	    nchunks > (SIZE_MAX - start) / sizeof(struct rpcrdma_write_chunk) ||
-	    (start + (sizeof(struct rpcrdma_write_chunk) * nchunks)) > end) {
-		dprintk("svcrdma: ary=%p, wc_nchunks=%d, vaend=%p\n",
-			ary, nchunks, vaend);
-		return NULL;
-	}
-	return (u32 *)&ary->wc_array[nchunks];
-}
-
-int svc_rdma_xdr_decode_req(struct rpcrdma_msg **rdma_req,
-			    struct svc_rqst *rqstp)
-{
-	struct rpcrdma_msg *rmsgp = NULL;
-	u32 *va;
-	u32 *vaend;
-	u32 hdr_len;
-
-	rmsgp = (struct rpcrdma_msg *)rqstp->rq_arg.head[0].iov_base;
+	__be32 *p, *end, *rdma_argp;
+	unsigned int hdr_len;
 
 	/* Verify that there's enough bytes for header + something */
-	if (rqstp->rq_arg.len <= RPCRDMA_HDRLEN_MIN) {
-		dprintk("svcrdma: header too short = %d\n",
-			rqstp->rq_arg.len);
-		return -EINVAL;
+	if (rq_arg->len <= RPCRDMA_HDRLEN_ERR)
+		goto out_short;
+
+	rdma_argp = rq_arg->head[0].iov_base;
+	if (*(rdma_argp + 1) != rpcrdma_version)
+		goto out_version;
+
+	switch (*(rdma_argp + 3)) {
+	case rdma_msg:
+	case rdma_nomsg:
+		break;
+
+	case rdma_done:
+		goto out_drop;
+
+	case rdma_error:
+		goto out_drop;
+
+	default:
+		goto out_proc;
 	}
 
-	/* Decode the header */
-	rmsgp->rm_xid = ntohl(rmsgp->rm_xid);
-	rmsgp->rm_vers = ntohl(rmsgp->rm_vers);
-	rmsgp->rm_credit = ntohl(rmsgp->rm_credit);
-	rmsgp->rm_type = ntohl(rmsgp->rm_type);
+	end = (__be32 *)((unsigned long)rdma_argp + rq_arg->len);
+	p = xdr_check_read_list(rdma_argp + 4, end);
+	if (!p)
+		goto out_inval;
+	p = xdr_check_write_list(p, end);
+	if (!p)
+		goto out_inval;
+	p = xdr_check_reply_chunk(p, end);
+	if (!p)
+		goto out_inval;
+	if (p > end)
+		goto out_inval;
 
-	if (rmsgp->rm_vers != RPCRDMA_VERSION)
-		return -ENOSYS;
-
-	/* Pull in the extra for the padded case and bump our pointer */
-	if (rmsgp->rm_type == RDMA_MSGP) {
-		int hdrlen;
-		rmsgp->rm_body.rm_padded.rm_align =
-			ntohl(rmsgp->rm_body.rm_padded.rm_align);
-		rmsgp->rm_body.rm_padded.rm_thresh =
-			ntohl(rmsgp->rm_body.rm_padded.rm_thresh);
-
-		va = &rmsgp->rm_body.rm_padded.rm_pempty[4];
-		rqstp->rq_arg.head[0].iov_base = va;
-		hdrlen = (u32)((unsigned long)va - (unsigned long)rmsgp);
-		rqstp->rq_arg.head[0].iov_len -= hdrlen;
-		if (hdrlen > rqstp->rq_arg.len)
-			return -EINVAL;
-		return hdrlen;
-	}
-
-	/* The chunk list may contain either a read chunk list or a write
-	 * chunk list and a reply chunk list.
-	 */
-	va = &rmsgp->rm_body.rm_chunks[0];
-	vaend = (u32 *)((unsigned long)rmsgp + rqstp->rq_arg.len);
-	va = decode_read_list(va, vaend);
-	if (!va)
-		return -EINVAL;
-	va = decode_write_list(va, vaend);
-	if (!va)
-		return -EINVAL;
-	va = decode_reply_array(va, vaend);
-	if (!va)
-		return -EINVAL;
-
-	rqstp->rq_arg.head[0].iov_base = va;
-	hdr_len = (unsigned long)va - (unsigned long)rmsgp;
-	rqstp->rq_arg.head[0].iov_len -= hdr_len;
-
-	*rdma_req = rmsgp;
+	rq_arg->head[0].iov_base = p;
+	hdr_len = (unsigned long)p - (unsigned long)rdma_argp;
+	rq_arg->head[0].iov_len -= hdr_len;
 	return hdr_len;
-}
 
-int svc_rdma_xdr_decode_deferred_req(struct svc_rqst *rqstp)
-{
-	struct rpcrdma_msg *rmsgp = NULL;
-	struct rpcrdma_read_chunk *ch;
-	struct rpcrdma_write_array *ary;
-	u32 *va;
-	u32 hdrlen;
+out_short:
+	dprintk("svcrdma: header too short = %d\n", rq_arg->len);
+	return -EINVAL;
 
-	dprintk("svcrdma: processing deferred RDMA header on rqstp=%p\n",
-		rqstp);
-	rmsgp = (struct rpcrdma_msg *)rqstp->rq_arg.head[0].iov_base;
+out_version:
+	dprintk("svcrdma: bad xprt version: %u\n",
+		be32_to_cpup(rdma_argp + 1));
+	return -EPROTONOSUPPORT;
 
-	/* Pull in the extra for the padded case and bump our pointer */
-	if (rmsgp->rm_type == RDMA_MSGP) {
-		va = &rmsgp->rm_body.rm_padded.rm_pempty[4];
-		rqstp->rq_arg.head[0].iov_base = va;
-		hdrlen = (u32)((unsigned long)va - (unsigned long)rmsgp);
-		rqstp->rq_arg.head[0].iov_len -= hdrlen;
-		return hdrlen;
-	}
+out_drop:
+	dprintk("svcrdma: dropping RDMA_DONE/ERROR message\n");
+	return 0;
 
-	/*
-	 * Skip all chunks to find RPC msg. These were previously processed
-	 */
-	va = &rmsgp->rm_body.rm_chunks[0];
+out_proc:
+	dprintk("svcrdma: bad rdma procedure (%u)\n",
+		be32_to_cpup(rdma_argp + 3));
+	return -EINVAL;
 
-	/* Skip read-list */
-	for (ch = (struct rpcrdma_read_chunk *)va;
-	     ch->rc_discrim != xdr_zero; ch++);
-	va = (u32 *)&ch->rc_position;
-
-	/* Skip write-list */
-	ary = (struct rpcrdma_write_array *)va;
-	if (ary->wc_discrim == xdr_zero)
-		va = (u32 *)&ary->wc_nchunks;
-	else
-		/*
-		 * rs_length is the 2nd 4B field in wc_target and taking its
-		 * address skips the list terminator
-		 */
-		va = (u32 *)&ary->wc_array[ary->wc_nchunks].wc_target.rs_length;
-
-	/* Skip reply-array */
-	ary = (struct rpcrdma_write_array *)va;
-	if (ary->wc_discrim == xdr_zero)
-		va = (u32 *)&ary->wc_nchunks;
-	else
-		va = (u32 *)&ary->wc_array[ary->wc_nchunks];
-
-	rqstp->rq_arg.head[0].iov_base = va;
-	hdrlen = (unsigned long)va - (unsigned long)rmsgp;
-	rqstp->rq_arg.head[0].iov_len -= hdrlen;
-
-	return hdrlen;
+out_inval:
+	dprintk("svcrdma: failed to parse transport header\n");
+	return -EINVAL;
 }
 
 int svc_rdma_xdr_encode_error(struct svcxprt_rdma *xprt,
 			      struct rpcrdma_msg *rmsgp,
-			      enum rpcrdma_errcode err, u32 *va)
+			      enum rpcrdma_errcode err, __be32 *va)
 {
-	u32 *startp = va;
+	__be32 *startp = va;
 
-	*va++ = htonl(rmsgp->rm_xid);
-	*va++ = htonl(rmsgp->rm_vers);
-	*va++ = htonl(xprt->sc_max_requests);
-	*va++ = htonl(RDMA_ERROR);
-	*va++ = htonl(err);
+	*va++ = rmsgp->rm_xid;
+	*va++ = rmsgp->rm_vers;
+	*va++ = xprt->sc_fc_credits;
+	*va++ = rdma_error;
+	*va++ = cpu_to_be32(err);
 	if (err == ERR_VERS) {
-		*va++ = htonl(RPCRDMA_VERSION);
-		*va++ = htonl(RPCRDMA_VERSION);
+		*va++ = rpcrdma_version;
+		*va++ = rpcrdma_version;
 	}
 
 	return (int)((unsigned long)va - (unsigned long)startp);
 }
 
-int svc_rdma_xdr_get_reply_hdr_len(struct rpcrdma_msg *rmsgp)
+/**
+ * svc_rdma_xdr_get_reply_hdr_length - Get length of Reply transport header
+ * @rdma_resp: buffer containing Reply transport header
+ *
+ * Returns length of transport header, in bytes.
+ */
+unsigned int svc_rdma_xdr_get_reply_hdr_len(__be32 *rdma_resp)
 {
-	struct rpcrdma_write_array *wr_ary;
+	unsigned int nsegs;
+	__be32 *p;
 
-	/* There is no read-list in a reply */
+	p = rdma_resp;
 
-	/* skip write list */
-	wr_ary = (struct rpcrdma_write_array *)
-		&rmsgp->rm_body.rm_chunks[1];
-	if (wr_ary->wc_discrim)
-		wr_ary = (struct rpcrdma_write_array *)
-			&wr_ary->wc_array[ntohl(wr_ary->wc_nchunks)].
-			wc_target.rs_length;
-	else
-		wr_ary = (struct rpcrdma_write_array *)
-			&wr_ary->wc_nchunks;
+	/* RPC-over-RDMA V1 replies never have a Read list. */
+	p += rpcrdma_fixed_maxsz + 1;
 
-	/* skip reply array */
-	if (wr_ary->wc_discrim)
-		wr_ary = (struct rpcrdma_write_array *)
-			&wr_ary->wc_array[ntohl(wr_ary->wc_nchunks)];
-	else
-		wr_ary = (struct rpcrdma_write_array *)
-			&wr_ary->wc_nchunks;
+	/* Skip Write list. */
+	while (*p++ != xdr_zero) {
+		nsegs = be32_to_cpup(p++);
+		p += nsegs * rpcrdma_segment_maxsz;
+	}
 
-	return (unsigned long) wr_ary - (unsigned long) rmsgp;
+	/* Skip Reply chunk. */
+	if (*p++ != xdr_zero) {
+		nsegs = be32_to_cpup(p++);
+		p += nsegs * rpcrdma_segment_maxsz;
+	}
+
+	return (unsigned long)p - (unsigned long)rdma_resp;
 }
 
 void svc_rdma_xdr_encode_write_list(struct rpcrdma_msg *rmsgp, int chunks)
@@ -341,7 +228,7 @@ void svc_rdma_xdr_encode_write_list(struct rpcrdma_msg *rmsgp, int chunks)
 	ary = (struct rpcrdma_write_array *)
 		&rmsgp->rm_body.rm_chunks[1];
 	ary->wc_discrim = xdr_one;
-	ary->wc_nchunks = htonl(chunks);
+	ary->wc_nchunks = cpu_to_be32(chunks);
 
 	/* write-list terminator */
 	ary->wc_array[chunks].wc_target.rs_handle = xdr_zero;
@@ -354,7 +241,7 @@ void svc_rdma_xdr_encode_reply_array(struct rpcrdma_write_array *ary,
 				 int chunks)
 {
 	ary->wc_discrim = xdr_one;
-	ary->wc_nchunks = htonl(chunks);
+	ary->wc_nchunks = cpu_to_be32(chunks);
 }
 
 void svc_rdma_xdr_encode_array_chunk(struct rpcrdma_write_array *ary,
@@ -366,21 +253,5 @@ void svc_rdma_xdr_encode_array_chunk(struct rpcrdma_write_array *ary,
 	struct rpcrdma_segment *seg = &ary->wc_array[chunk_no].wc_target;
 	seg->rs_handle = rs_handle;
 	seg->rs_offset = rs_offset;
-	seg->rs_length = htonl(write_len);
-}
-
-void svc_rdma_xdr_encode_reply_header(struct svcxprt_rdma *xprt,
-				  struct rpcrdma_msg *rdma_argp,
-				  struct rpcrdma_msg *rdma_resp,
-				  enum rpcrdma_proc rdma_type)
-{
-	rdma_resp->rm_xid = htonl(rdma_argp->rm_xid);
-	rdma_resp->rm_vers = htonl(rdma_argp->rm_vers);
-	rdma_resp->rm_credit = htonl(xprt->sc_max_requests);
-	rdma_resp->rm_type = htonl(rdma_type);
-
-	/* Encode <nul> chunks lists */
-	rdma_resp->rm_body.rm_chunks[0] = xdr_zero;
-	rdma_resp->rm_body.rm_chunks[1] = xdr_zero;
-	rdma_resp->rm_body.rm_chunks[2] = xdr_zero;
+	seg->rs_length = cpu_to_be32(write_len);
 }

@@ -155,9 +155,10 @@ extern void kvmppc_core_destroy_mmu(struct kvm_vcpu *vcpu);
 extern int kvmppc_kvm_pv(struct kvm_vcpu *vcpu);
 extern void kvmppc_map_magic(struct kvm_vcpu *vcpu);
 
-extern long kvmppc_alloc_hpt(struct kvm *kvm, u32 *htab_orderp);
-extern long kvmppc_alloc_reset_hpt(struct kvm *kvm, u32 *htab_orderp);
-extern void kvmppc_free_hpt(struct kvm *kvm);
+extern int kvmppc_allocate_hpt(struct kvm_hpt_info *info, u32 order);
+extern void kvmppc_set_hpt(struct kvm *kvm, struct kvm_hpt_info *info);
+extern long kvmppc_alloc_reset_hpt(struct kvm *kvm, int order);
+extern void kvmppc_free_hpt(struct kvm_hpt_info *info);
 extern long kvmppc_prepare_vrma(struct kvm *kvm,
 				struct kvm_userspace_memory_region *mem);
 extern void kvmppc_map_vrma(struct kvm_vcpu *vcpu,
@@ -165,15 +166,29 @@ extern void kvmppc_map_vrma(struct kvm_vcpu *vcpu,
 extern int kvmppc_pseries_do_hcall(struct kvm_vcpu *vcpu);
 
 extern long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
-				struct kvm_create_spapr_tce *args);
+				struct kvm_create_spapr_tce_64 *args);
+extern struct kvmppc_spapr_tce_table *kvmppc_find_table(
+		struct kvm_vcpu *vcpu, unsigned long liobn);
+extern long kvmppc_ioba_validate(struct kvmppc_spapr_tce_table *stt,
+		unsigned long ioba, unsigned long npages);
+extern long kvmppc_tce_validate(struct kvmppc_spapr_tce_table *tt,
+		unsigned long tce);
+extern long kvmppc_gpa_to_ua(struct kvm *kvm, unsigned long gpa,
+		unsigned long *ua, unsigned long **prmap);
+extern void kvmppc_tce_put(struct kvmppc_spapr_tce_table *tt,
+		unsigned long idx, unsigned long tce);
 extern long kvmppc_h_put_tce(struct kvm_vcpu *vcpu, unsigned long liobn,
 			     unsigned long ioba, unsigned long tce);
+extern long kvmppc_h_put_tce_indirect(struct kvm_vcpu *vcpu,
+		unsigned long liobn, unsigned long ioba,
+		unsigned long tce_list, unsigned long npages);
+extern long kvmppc_h_stuff_tce(struct kvm_vcpu *vcpu,
+		unsigned long liobn, unsigned long ioba,
+		unsigned long tce_value, unsigned long npages);
 extern long kvmppc_h_get_tce(struct kvm_vcpu *vcpu, unsigned long liobn,
 			     unsigned long ioba);
-extern struct kvm_rma_info *kvm_alloc_rma(void);
-extern void kvm_release_rma(struct kvm_rma_info *ri);
-extern struct page *kvm_alloc_hpt(unsigned long nr_pages);
-extern void kvm_release_hpt(struct page *page, unsigned long nr_pages);
+extern struct page *kvm_alloc_hpt_cma(unsigned long nr_pages);
+extern void kvm_free_hpt_cma(struct page *page, unsigned long nr_pages);
 extern int kvmppc_core_init_vm(struct kvm *kvm);
 extern void kvmppc_core_destroy_vm(struct kvm *kvm);
 extern void kvmppc_core_free_memslot(struct kvm *kvm,
@@ -184,10 +199,11 @@ extern int kvmppc_core_create_memslot(struct kvm *kvm,
 				      unsigned long npages);
 extern int kvmppc_core_prepare_memory_region(struct kvm *kvm,
 				struct kvm_memory_slot *memslot,
-				struct kvm_userspace_memory_region *mem);
+				const struct kvm_userspace_memory_region *mem);
 extern void kvmppc_core_commit_memory_region(struct kvm *kvm,
-				struct kvm_userspace_memory_region *mem,
-				const struct kvm_memory_slot *old);
+				const struct kvm_userspace_memory_region *mem,
+				const struct kvm_memory_slot *old,
+				const struct kvm_memory_slot *new);
 extern int kvm_vm_ioctl_get_smmu_info(struct kvm *kvm,
 				      struct kvm_ppc_smmu_info *info);
 extern void kvmppc_core_flush_memslot(struct kvm *kvm,
@@ -199,6 +215,10 @@ extern void kvmppc_bookehv_exit(void);
 extern int kvmppc_prepare_to_enter(struct kvm_vcpu *vcpu);
 
 extern int kvm_vm_ioctl_get_htab_fd(struct kvm *kvm, struct kvm_get_htab_fd *);
+extern long kvm_vm_ioctl_resize_hpt_prepare(struct kvm *kvm,
+					    struct kvm_ppc_resize_hpt *rhpt);
+extern long kvm_vm_ioctl_resize_hpt_commit(struct kvm *kvm,
+					   struct kvm_ppc_resize_hpt *rhpt);
 
 int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu, struct kvm_interrupt *irq);
 
@@ -245,10 +265,11 @@ struct kvmppc_ops {
 	void (*flush_memslot)(struct kvm *kvm, struct kvm_memory_slot *memslot);
 	int (*prepare_memory_region)(struct kvm *kvm,
 				     struct kvm_memory_slot *memslot,
-				     struct kvm_userspace_memory_region *mem);
+				     const struct kvm_userspace_memory_region *mem);
 	void (*commit_memory_region)(struct kvm *kvm,
-				     struct kvm_userspace_memory_region *mem,
-				     const struct kvm_memory_slot *old);
+				     const struct kvm_userspace_memory_region *mem,
+				     const struct kvm_memory_slot *old,
+				     const struct kvm_memory_slot *new);
 	int (*unmap_hva)(struct kvm *kvm, unsigned long hva);
 	int (*unmap_hva_range)(struct kvm *kvm, unsigned long start,
 			   unsigned long end);
@@ -271,6 +292,12 @@ struct kvmppc_ops {
 	long (*arch_vm_ioctl)(struct file *filp, unsigned int ioctl,
 			      unsigned long arg);
 	int (*hcall_implemented)(unsigned long hcall);
+	int (*irq_bypass_add_producer)(struct irq_bypass_consumer *,
+				       struct irq_bypass_producer *);
+	void (*irq_bypass_del_producer)(struct irq_bypass_consumer *,
+					struct irq_bypass_producer *);
+	int (*configure_mmu)(struct kvm *kvm, struct kvm_ppc_mmuv3_cfg *cfg);
+	int (*get_rmmu_info)(struct kvm *kvm, struct kvm_ppc_rmmu_info *info);
 };
 
 extern struct kvmppc_ops *kvmppc_hv_ops;
@@ -303,6 +330,8 @@ static inline bool is_kvmppc_hv_enabled(struct kvm *kvm)
 {
 	return kvm->arch.kvm_ops == kvmppc_hv_ops;
 }
+
+extern int kvmppc_hwrng_present(void);
 
 /*
  * Cuts out inst bits with ordering according to spec.
@@ -435,6 +464,19 @@ static inline int kvmppc_xics_enabled(struct kvm_vcpu *vcpu)
 {
 	return vcpu->arch.irq_type == KVMPPC_IRQ_XICS;
 }
+
+static inline struct kvmppc_passthru_irqmap *kvmppc_get_passthru_irqmap(
+				struct kvm *kvm)
+{
+	if (kvm && kvm_irq_bypass)
+		return kvm->arch.pimap;
+	return NULL;
+}
+
+extern void kvmppc_alloc_host_rm_ops(void);
+extern void kvmppc_free_host_rm_ops(void);
+extern void kvmppc_free_pimap(struct kvm *kvm);
+extern int kvmppc_xics_rm_complete(struct kvm_vcpu *vcpu, u32 hcall);
 extern void kvmppc_xics_free_icp(struct kvm_vcpu *vcpu);
 extern int kvmppc_xics_create_icp(struct kvm_vcpu *vcpu, unsigned long server);
 extern int kvm_vm_ioctl_xics_irq(struct kvm *kvm, struct kvm_irq_level *args);
@@ -443,7 +485,25 @@ extern u64 kvmppc_xics_get_icp(struct kvm_vcpu *vcpu);
 extern int kvmppc_xics_set_icp(struct kvm_vcpu *vcpu, u64 icpval);
 extern int kvmppc_xics_connect_vcpu(struct kvm_device *dev,
 			struct kvm_vcpu *vcpu, u32 cpu);
+extern void kvmppc_xics_ipi_action(void);
+extern void kvmppc_xics_set_mapped(struct kvm *kvm, unsigned long guest_irq,
+				   unsigned long host_irq);
+extern void kvmppc_xics_clr_mapped(struct kvm *kvm, unsigned long guest_irq,
+				   unsigned long host_irq);
+extern long kvmppc_deliver_irq_passthru(struct kvm_vcpu *vcpu, __be32 xirr,
+					struct kvmppc_irq_map *irq_map,
+					struct kvmppc_passthru_irqmap *pimap,
+					bool *again);
+extern int h_ipi_redirect;
 #else
+static inline struct kvmppc_passthru_irqmap *kvmppc_get_passthru_irqmap(
+				struct kvm *kvm)
+	{ return NULL; }
+static inline void kvmppc_alloc_host_rm_ops(void) {};
+static inline void kvmppc_free_host_rm_ops(void) {};
+static inline void kvmppc_free_pimap(struct kvm *kvm) {};
+static inline int kvmppc_xics_rm_complete(struct kvm_vcpu *vcpu, u32 hcall)
+	{ return 0; }
 static inline int kvmppc_xics_enabled(struct kvm_vcpu *vcpu)
 	{ return 0; }
 static inline void kvmppc_xics_free_icp(struct kvm_vcpu *vcpu) { }
@@ -456,6 +516,75 @@ static inline int kvm_vm_ioctl_xics_irq(struct kvm *kvm,
 static inline int kvmppc_xics_hcall(struct kvm_vcpu *vcpu, u32 cmd)
 	{ return 0; }
 #endif
+
+/*
+ * Prototypes for functions called only from assembler code.
+ * Having prototypes reduces sparse errors.
+ */
+long kvmppc_rm_h_put_tce(struct kvm_vcpu *vcpu, unsigned long liobn,
+			 unsigned long ioba, unsigned long tce);
+long kvmppc_rm_h_put_tce_indirect(struct kvm_vcpu *vcpu,
+				  unsigned long liobn, unsigned long ioba,
+				  unsigned long tce_list, unsigned long npages);
+long kvmppc_rm_h_stuff_tce(struct kvm_vcpu *vcpu,
+			   unsigned long liobn, unsigned long ioba,
+			   unsigned long tce_value, unsigned long npages);
+long int kvmppc_rm_h_confer(struct kvm_vcpu *vcpu, int target,
+                            unsigned int yield_count);
+long kvmppc_h_random(struct kvm_vcpu *vcpu);
+void kvmhv_commence_exit(int trap);
+long kvmppc_realmode_machine_check(struct kvm_vcpu *vcpu);
+void kvmppc_subcore_enter_guest(void);
+void kvmppc_subcore_exit_guest(void);
+long kvmppc_realmode_hmi_handler(void);
+long kvmppc_h_enter(struct kvm_vcpu *vcpu, unsigned long flags,
+                    long pte_index, unsigned long pteh, unsigned long ptel);
+long kvmppc_h_remove(struct kvm_vcpu *vcpu, unsigned long flags,
+                     unsigned long pte_index, unsigned long avpn);
+long kvmppc_h_bulk_remove(struct kvm_vcpu *vcpu);
+long kvmppc_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
+                      unsigned long pte_index, unsigned long avpn,
+                      unsigned long va);
+long kvmppc_h_read(struct kvm_vcpu *vcpu, unsigned long flags,
+                   unsigned long pte_index);
+long kvmppc_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
+                        unsigned long pte_index);
+long kvmppc_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
+                        unsigned long pte_index);
+long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
+                          unsigned long slb_v, unsigned int status, bool data);
+unsigned long kvmppc_rm_h_xirr(struct kvm_vcpu *vcpu);
+int kvmppc_rm_h_ipi(struct kvm_vcpu *vcpu, unsigned long server,
+                    unsigned long mfrr);
+int kvmppc_rm_h_cppr(struct kvm_vcpu *vcpu, unsigned long cppr);
+int kvmppc_rm_h_eoi(struct kvm_vcpu *vcpu, unsigned long xirr);
+
+/*
+ * Host-side operations we want to set up while running in real
+ * mode in the guest operating on the xics.
+ * Currently only VCPU wakeup is supported.
+ */
+
+union kvmppc_rm_state {
+	unsigned long raw;
+	struct {
+		u32 in_host;
+		u32 rm_action;
+	};
+};
+
+struct kvmppc_host_rm_core {
+	union kvmppc_rm_state rm_state;
+	void *rm_data;
+	char pad[112];
+};
+
+struct kvmppc_host_rm_ops {
+	struct kvmppc_host_rm_core	*rm_core;
+	void		(*vcpu_kick)(struct kvm_vcpu *vcpu);
+};
+
+extern struct kvmppc_host_rm_ops *kvmppc_host_rm_ops_hv;
 
 static inline unsigned long kvmppc_get_epr(struct kvm_vcpu *vcpu)
 {
@@ -513,7 +642,7 @@ void kvmppc_claim_lpid(long lpid);
 void kvmppc_free_lpid(long lpid);
 void kvmppc_init_lpid(unsigned long nr_lpids);
 
-static inline void kvmppc_mmu_flush_icache(pfn_t pfn)
+static inline void kvmppc_mmu_flush_icache(kvm_pfn_t pfn)
 {
 	struct page *page;
 	/*

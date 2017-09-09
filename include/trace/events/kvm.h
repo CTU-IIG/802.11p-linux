@@ -37,6 +37,28 @@ TRACE_EVENT(kvm_userspace_exit,
 		  __entry->errno < 0 ? -__entry->errno : __entry->reason)
 );
 
+TRACE_EVENT(kvm_vcpu_wakeup,
+	    TP_PROTO(__u64 ns, bool waited, bool valid),
+	    TP_ARGS(ns, waited, valid),
+
+	TP_STRUCT__entry(
+		__field(	__u64,		ns		)
+		__field(	bool,		waited		)
+		__field(	bool,		valid		)
+	),
+
+	TP_fast_assign(
+		__entry->ns		= ns;
+		__entry->waited		= waited;
+		__entry->valid		= valid;
+	),
+
+	TP_printk("%s time %lld ns, polling %s",
+		  __entry->waited ? "wait" : "poll",
+		  __entry->ns,
+		  __entry->valid ? "valid" : "invalid")
+);
+
 #if defined(CONFIG_HAVE_KVM_IRQFD)
 TRACE_EVENT(kvm_set_irq,
 	TP_PROTO(unsigned int gsi, int level, int irq_source_id),
@@ -86,7 +108,7 @@ TRACE_EVENT(kvm_ioapic_set_irq,
 		__entry->coalesced	= coalesced;
 	),
 
-	TP_printk("pin %u dst %x vec=%u (%s|%s|%s%s)%s",
+	TP_printk("pin %u dst %x vec %u (%s|%s|%s%s)%s",
 		  __entry->pin, (u8)(__entry->e >> 56), (u8)__entry->e,
 		  __print_symbolic((__entry->e >> 8 & 0x7), kvm_deliver_mode),
 		  (__entry->e & (1<<11)) ? "logical" : "physical",
@@ -107,7 +129,7 @@ TRACE_EVENT(kvm_ioapic_delayed_eoi_inj,
 		__entry->e		= e;
 	),
 
-	TP_printk("dst %x vec=%u (%s|%s|%s%s)",
+	TP_printk("dst %x vec %u (%s|%s|%s%s)",
 		  (u8)(__entry->e >> 56), (u8)__entry->e,
 		  __print_symbolic((__entry->e >> 8 & 0x7), kvm_deliver_mode),
 		  (__entry->e & (1<<11)) ? "logical" : "physical",
@@ -129,8 +151,9 @@ TRACE_EVENT(kvm_msi_set_irq,
 		__entry->data		= data;
 	),
 
-	TP_printk("dst %u vec %x (%s|%s|%s%s)",
-		  (u8)(__entry->address >> 12), (u8)__entry->data,
+	TP_printk("dst %llx vec %u (%s|%s|%s%s)",
+		  (u8)(__entry->address >> 12) | ((__entry->address >> 32) & 0xffffff00),
+		  (u8)__entry->data,
 		  __print_symbolic((__entry->data >> 8 & 0x7), kvm_deliver_mode),
 		  (__entry->address & (1<<2)) ? "logical" : "physical",
 		  (__entry->data & (1<<15)) ? "level" : "edge",
@@ -146,6 +169,14 @@ TRACE_EVENT(kvm_msi_set_irq,
 
 #if defined(CONFIG_HAVE_KVM_IRQFD)
 
+#ifdef kvm_irqchips
+#define kvm_ack_irq_string "irqchip %s pin %u"
+#define kvm_ack_irq_parm  __print_symbolic(__entry->irqchip, kvm_irqchips), __entry->pin
+#else
+#define kvm_ack_irq_string "irqchip %d pin %u"
+#define kvm_ack_irq_parm  __entry->irqchip, __entry->pin
+#endif
+
 TRACE_EVENT(kvm_ack_irq,
 	TP_PROTO(unsigned int irqchip, unsigned int pin),
 	TP_ARGS(irqchip, pin),
@@ -160,13 +191,7 @@ TRACE_EVENT(kvm_ack_irq,
 		__entry->pin		= pin;
 	),
 
-#ifdef kvm_irqchips
-	TP_printk("irqchip %s pin %u",
-		  __print_symbolic(__entry->irqchip, kvm_irqchips),
-		 __entry->pin)
-#else
-	TP_printk("irqchip %d pin %u", __entry->irqchip, __entry->pin)
-#endif
+	TP_printk(kvm_ack_irq_string, kvm_ack_irq_parm)
 );
 
 #endif /* defined(CONFIG_HAVE_KVM_IRQFD) */
@@ -336,6 +361,37 @@ TRACE_EVENT(
 );
 
 #endif
+
+TRACE_EVENT(kvm_halt_poll_ns,
+	TP_PROTO(bool grow, unsigned int vcpu_id, unsigned int new,
+		 unsigned int old),
+	TP_ARGS(grow, vcpu_id, new, old),
+
+	TP_STRUCT__entry(
+		__field(bool, grow)
+		__field(unsigned int, vcpu_id)
+		__field(unsigned int, new)
+		__field(unsigned int, old)
+	),
+
+	TP_fast_assign(
+		__entry->grow           = grow;
+		__entry->vcpu_id        = vcpu_id;
+		__entry->new            = new;
+		__entry->old            = old;
+	),
+
+	TP_printk("vcpu %u: halt_poll_ns %u (%s %u)",
+			__entry->vcpu_id,
+			__entry->new,
+			__entry->grow ? "grow" : "shrink",
+			__entry->old)
+);
+
+#define trace_kvm_halt_poll_ns_grow(vcpu_id, new, old) \
+	trace_kvm_halt_poll_ns(true, vcpu_id, new, old)
+#define trace_kvm_halt_poll_ns_shrink(vcpu_id, new, old) \
+	trace_kvm_halt_poll_ns(false, vcpu_id, new, old)
 
 #endif /* _TRACE_KVM_MAIN_H */
 

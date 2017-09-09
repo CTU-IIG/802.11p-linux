@@ -136,7 +136,7 @@
 
 #define ADE7854_MAX_TX    7
 #define ADE7854_MAX_RX    7
-#define ADE7854_STARTUP_DELAY 1
+#define ADE7854_STARTUP_DELAY 1000
 
 #define ADE7854_SPI_SLOW	(u32)(300 * 1000)
 #define ADE7854_SPI_BURST	(u32)(1000 * 1000)
@@ -168,7 +168,7 @@ struct ade7854_state {
 
 };
 
-extern int ade7854_probe(struct iio_dev *indio_dev, struct device *dev);
-extern int ade7854_remove(struct iio_dev *indio_dev);
+int ade7854_probe(struct iio_dev *indio_dev, struct device *dev);
+int ade7854_remove(struct iio_dev *indio_dev);
 
 #endif

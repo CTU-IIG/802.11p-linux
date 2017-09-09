@@ -56,7 +56,7 @@ struct file;
 struct subprocess_info {
 	struct work_struct work;
 	struct completion *complete;
-	char *path;
+	const char *path;
 	char **argv;
 	char **envp;
 	int wait;
@@ -67,10 +67,11 @@ struct subprocess_info {
 };
 
 extern int
-call_usermodehelper(char *path, char **argv, char **envp, int wait);
+call_usermodehelper(const char *path, char **argv, char **envp, int wait);
 
 extern struct subprocess_info *
-call_usermodehelper_setup(char *path, char **argv, char **envp, gfp_t gfp_mask,
+call_usermodehelper_setup(const char *path, char **argv, char **envp,
+			  gfp_t gfp_mask,
 			  int (*init)(struct subprocess_info *info, struct cred *new),
 			  void (*cleanup)(struct subprocess_info *), void *data);
 
@@ -84,8 +85,6 @@ enum umh_disable_depth {
 	UMH_FREEZING,
 	UMH_DISABLED,
 };
-
-extern void usermodehelper_init(void);
 
 extern int __usermodehelper_disable(enum umh_disable_depth depth);
 extern void __usermodehelper_set_disable_depth(enum umh_disable_depth depth);

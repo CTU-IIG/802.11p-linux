@@ -6,6 +6,7 @@
  * Copyright (C) 1999, 2000 by Silicon Graphics
  * Copyright (C) 2003 by Ralf Baechle
  */
+#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <asm/fixmap.h>
@@ -60,20 +61,7 @@ void pmd_init(unsigned long addr, unsigned long pagetable)
 		p[-1] = pagetable;
 	} while (p != end);
 }
-#endif
-
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-
-void pmdp_splitting_flush(struct vm_area_struct *vma,
-			 unsigned long address,
-			 pmd_t *pmdp)
-{
-	if (!pmd_trans_splitting(*pmdp)) {
-		pmd_t pmd = pmd_mksplitting(*pmdp);
-		set_pmd_at(vma->vm_mm, address, pmdp, pmd);
-	}
-}
-
+EXPORT_SYMBOL_GPL(pmd_init);
 #endif
 
 pmd_t mk_pmd(struct page *page, pgprot_t prot)

@@ -28,12 +28,13 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/signal.h>
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/ptrace.h>
+#include <linux/uaccess.h>
 
 /*
  * This routine handles page faults.  It determines the address,
@@ -73,7 +74,7 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long write,
 	* If we're in an interrupt or have no user
 	* context, we must not take the fault..
 	*/
-	if (in_atomic() || !mm)
+	if (pagefault_disabled() || !mm)
 		goto bad_area_nosemaphore;
 
 	if (user_mode(regs))
@@ -110,10 +111,12 @@ good_area:
 	* make sure we exit gracefully rather than endlessly redo
 	* the fault.
 	*/
-	fault = handle_mm_fault(mm, vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags);
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();

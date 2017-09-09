@@ -25,6 +25,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
@@ -34,6 +35,7 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
+#include <linux/util_macros.h>
 
 /* Addresses to scan */
 static const unsigned short normal_i2c[] = { 0x2c, 0x2d, 0x2e, I2C_CLIENT_END };
@@ -135,7 +137,8 @@ static const int lm85_scaling[] = {  /* .001 Volts */
 #define SCALE(val, from, to)	(((val) * (to) + ((from) / 2)) / (from))
 
 #define INS_TO_REG(n, val)	\
-		clamp_val(SCALE(val, lm85_scaling[n], 192), 0, 255)
+		SCALE(clamp_val(val, 0, 255 * lm85_scaling[n] / 192), \
+		      lm85_scaling[n], 192)
 
 #define INSEXT_FROM_REG(n, val, ext)	\
 		SCALE(((val) << 4) + (ext), 192 << 4, lm85_scaling[n])
@@ -190,15 +193,7 @@ static const int lm85_range_map[] = {
 
 static int RANGE_TO_REG(long range)
 {
-	int i;
-
-	/* Find the closest match */
-	for (i = 0; i < 15; ++i) {
-		if (range <= (lm85_range_map[i] + lm85_range_map[i + 1]) / 2)
-			break;
-	}
-
-	return i;
+	return find_closest(range, lm85_range_map, ARRAY_SIZE(lm85_range_map));
 }
 #define RANGE_FROM_REG(val)	lm85_range_map[(val) & 0x0f]
 
@@ -209,16 +204,12 @@ static const int lm85_freq_map[8] = { /* 1 Hz */
 static const int adm1027_freq_map[8] = { /* 1 Hz */
 	11, 15, 22, 29, 35, 44, 59, 88
 };
+#define FREQ_MAP_LEN	8
 
-static int FREQ_TO_REG(const int *map, unsigned long freq)
+static int FREQ_TO_REG(const int *map,
+		       unsigned int map_size, unsigned long freq)
 {
-	int i;
-
-	/* Find the closest match */
-	for (i = 0; i < 7; ++i)
-		if (freq <= (map[i] + map[i + 1]) / 2)
-			break;
-	return i;
+	return find_closest(freq, map, map_size);
 }
 
 static int FREQ_FROM_REG(const int *map, u8 reg)
@@ -614,8 +605,8 @@ show_fan_offset(4);
 
 /* vid, vrm, alarms */
 
-static ssize_t show_vid_reg(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t cpu0_vid_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct lm85_data *data = lm85_update_device(dev);
 	int vid;
@@ -631,17 +622,17 @@ static ssize_t show_vid_reg(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", vid);
 }
 
-static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid_reg, NULL);
+static DEVICE_ATTR_RO(cpu0_vid);
 
-static ssize_t show_vrm_reg(struct device *dev, struct device_attribute *attr,
-		char *buf)
+static ssize_t vrm_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
 {
 	struct lm85_data *data = dev_get_drvdata(dev);
 	return sprintf(buf, "%ld\n", (long) data->vrm);
 }
 
-static ssize_t store_vrm_reg(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t vrm_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
 {
 	struct lm85_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -658,16 +649,16 @@ static ssize_t store_vrm_reg(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static DEVICE_ATTR(vrm, S_IRUGO | S_IWUSR, show_vrm_reg, store_vrm_reg);
+static DEVICE_ATTR_RW(vrm);
 
-static ssize_t show_alarms_reg(struct device *dev, struct device_attribute
-		*attr, char *buf)
+static ssize_t alarms_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
 {
 	struct lm85_data *data = lm85_update_device(dev);
 	return sprintf(buf, "%u\n", data->alarms);
 }
 
-static DEVICE_ATTR(alarms, S_IRUGO, show_alarms_reg, NULL);
+static DEVICE_ATTR_RO(alarms);
 
 static ssize_t show_alarm(struct device *dev, struct device_attribute *attr,
 		char *buf)
@@ -828,7 +819,8 @@ static ssize_t set_pwm_freq(struct device *dev,
 		data->cfg5 &= ~ADT7468_HFPWM;
 		lm85_write_value(client, ADT7468_REG_CFG5, data->cfg5);
 	} else {					/* Low freq. mode */
-		data->pwm_freq[nr] = FREQ_TO_REG(data->freq_map, val);
+		data->pwm_freq[nr] = FREQ_TO_REG(data->freq_map,
+						 FREQ_MAP_LEN, val);
 		lm85_write_value(client, LM85_REG_AFAN_RANGE(nr),
 				 (data->zone[nr].range << 4)
 				 | data->pwm_freq[nr]);
@@ -1561,7 +1553,10 @@ static int lm85_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		return -ENOMEM;
 
 	data->client = client;
-	data->type = id->driver_data;
+	if (client->dev.of_node)
+		data->type = (enum chips)of_device_get_match_data(&client->dev);
+	else
+		data->type = id->driver_data;
 	mutex_init(&data->update_lock);
 
 	/* Fill in the chip specific driver values */
@@ -1632,10 +1627,60 @@ static const struct i2c_device_id lm85_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, lm85_id);
 
+static const struct of_device_id lm85_of_match[] = {
+	{
+		.compatible = "adi,adm1027",
+		.data = (void *)adm1027
+	},
+	{
+		.compatible = "adi,adt7463",
+		.data = (void *)adt7463
+	},
+	{
+		.compatible = "adi,adt7468",
+		.data = (void *)adt7468
+	},
+	{
+		.compatible = "national,lm85",
+		.data = (void *)lm85
+	},
+	{
+		.compatible = "national,lm85b",
+		.data = (void *)lm85
+	},
+	{
+		.compatible = "national,lm85c",
+		.data = (void *)lm85
+	},
+	{
+		.compatible = "smsc,emc6d100",
+		.data = (void *)emc6d100
+	},
+	{
+		.compatible = "smsc,emc6d101",
+		.data = (void *)emc6d100
+	},
+	{
+		.compatible = "smsc,emc6d102",
+		.data = (void *)emc6d102
+	},
+	{
+		.compatible = "smsc,emc6d103",
+		.data = (void *)emc6d103
+	},
+	{
+		.compatible = "smsc,emc6d103s",
+		.data = (void *)emc6d103s
+	},
+	{ },
+};
+MODULE_DEVICE_TABLE(of, lm85_of_match);
+
 static struct i2c_driver lm85_driver = {
 	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name   = "lm85",
+		.of_match_table = of_match_ptr(lm85_of_match),
 	},
 	.probe		= lm85_probe,
 	.id_table	= lm85_id,

@@ -1,13 +1,14 @@
 #ifndef __FS_CEPH_MESSENGER_H
 #define __FS_CEPH_MESSENGER_H
 
-#include <linux/blk_types.h>
+#include <linux/bvec.h>
 #include <linux/kref.h>
 #include <linux/mutex.h>
 #include <linux/net.h>
 #include <linux/radix-tree.h>
 #include <linux/uio.h>
 #include <linux/workqueue.h>
+#include <net/net_namespace.h>
 
 #include <linux/ceph/types.h>
 #include <linux/ceph/buffer.h>
@@ -29,7 +30,7 @@ struct ceph_connection_operations {
 	struct ceph_auth_handshake *(*get_authorizer) (
 				struct ceph_connection *con,
 			       int *proto, int force_new);
-	int (*verify_authorizer_reply) (struct ceph_connection *con, int len);
+	int (*verify_authorizer_reply) (struct ceph_connection *con);
 	int (*invalidate_authorizer)(struct ceph_connection *con);
 
 	/* there was some error on the socket (disconnect, whatever) */
@@ -42,10 +43,9 @@ struct ceph_connection_operations {
 	struct ceph_msg * (*alloc_msg) (struct ceph_connection *con,
 					struct ceph_msg_header *hdr,
 					int *skip);
-	int (*sign_message) (struct ceph_connection *con, struct ceph_msg *msg);
 
-	int (*check_message_signature) (struct ceph_connection *con,
-					struct ceph_msg *msg);
+	int (*sign_message) (struct ceph_msg *msg);
+	int (*check_message_signature) (struct ceph_msg *msg);
 };
 
 /* use format string %s%d */
@@ -56,7 +56,7 @@ struct ceph_messenger {
 	struct ceph_entity_addr my_enc_addr;
 
 	atomic_t stopping;
-	bool nocrc;
+	possible_net_t net;
 
 	/*
 	 * the global_seq counts connections i (attempt to) initiate
@@ -64,9 +64,6 @@ struct ceph_messenger {
 	 */
 	u32 global_seq;
 	spinlock_t global_seq_lock;
-
-	u64 supported_features;
-	u64 required_features;
 };
 
 enum ceph_msg_data_type {
@@ -223,6 +220,7 @@ struct ceph_connection {
 	struct ceph_entity_addr actual_peer_addr;
 
 	/* message out temps */
+	struct ceph_msg_header out_hdr;
 	struct ceph_msg *out_msg;        /* sending message (== tail of
 					    out_sent) */
 	bool out_msg_done;
@@ -232,9 +230,10 @@ struct ceph_connection {
 	int out_kvec_left;   /* kvec's left in out_kvec */
 	int out_skip;        /* skip this many bytes */
 	int out_kvec_bytes;  /* total bytes left */
-	bool out_kvec_is_msg; /* kvec refers to out_msg */
 	int out_more;        /* there is more data after the kvecs */
 	__le64 out_temp_ack; /* for writing an ack */
+	struct ceph_timespec out_temp_keepalive2; /* for writing keepalive2
+						     stamp */
 
 	/* message in temps */
 	struct ceph_msg_header in_hdr;
@@ -244,6 +243,8 @@ struct ceph_connection {
 	char in_tag;         /* protocol control byte */
 	int in_base_pos;     /* bytes read */
 	__le64 in_temp_ack;  /* for reading an ack */
+
+	struct timespec last_keepalive_ack; /* keepalive2 ack stamp */
 
 	struct delayed_work work;	    /* send|recv work */
 	unsigned long       delay;          /* current delay interval */
@@ -261,10 +262,8 @@ extern void ceph_msgr_exit(void);
 extern void ceph_msgr_flush(void);
 
 extern void ceph_messenger_init(struct ceph_messenger *msgr,
-			struct ceph_entity_addr *myaddr,
-			u64 supported_features,
-			u64 required_features,
-			bool nocrc);
+				struct ceph_entity_addr *myaddr);
+extern void ceph_messenger_fini(struct ceph_messenger *msgr);
 
 extern void ceph_con_init(struct ceph_connection *con, void *private,
 			const struct ceph_connection_operations *ops,
@@ -280,6 +279,8 @@ extern void ceph_msg_revoke(struct ceph_msg *msg);
 extern void ceph_msg_revoke_incoming(struct ceph_msg *msg);
 
 extern void ceph_con_keepalive(struct ceph_connection *con);
+extern bool ceph_con_keepalive_expired(struct ceph_connection *con,
+				       unsigned long interval);
 
 extern void ceph_msg_data_add_pages(struct ceph_msg *msg, struct page **pages,
 				size_t length, size_t alignment);

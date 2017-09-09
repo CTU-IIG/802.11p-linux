@@ -692,8 +692,12 @@ static void logi_dj_ll_close(struct hid_device *hid)
 	dbg_hid("%s:%s\n", __func__, hid->phys);
 }
 
-static u8 unifying_name_query[]  = {0x10, 0xff, 0x83, 0xb5, 0x40, 0x00, 0x00};
-static u8 unifying_name_answer[] = {0x11, 0xff, 0x83, 0xb5};
+/*
+ * Register 0xB5 is "pairing information". It is solely intended for the
+ * receiver, so do not overwrite the device index.
+ */
+static u8 unifying_pairing_query[]  = {0x10, 0xff, 0x83, 0xb5};
+static u8 unifying_pairing_answer[] = {0x11, 0xff, 0x83, 0xb5};
 
 static int logi_dj_ll_raw_request(struct hid_device *hid,
 				  unsigned char reportnum, __u8 *buf,
@@ -712,9 +716,9 @@ static int logi_dj_ll_raw_request(struct hid_device *hid,
 
 		/* special case where we should not overwrite
 		 * the device_index */
-		if (count == 7 && !memcmp(buf, unifying_name_query,
-					  sizeof(unifying_name_query)))
-			buf[4] |= djdev->device_index - 1;
+		if (count == 7 && !memcmp(buf, unifying_pairing_query,
+					  sizeof(unifying_pairing_query)))
+			buf[4] = (buf[4] & 0xf0) | (djdev->device_index - 1);
 		else
 			buf[1] = djdev->device_index;
 		return hid_hw_raw_request(djrcv_dev->hdev, reportnum, buf,
@@ -911,9 +915,8 @@ static int logi_dj_hidpp_event(struct hid_device *hdev,
 		/* special case were the device wants to know its unifying
 		 * name */
 		if (size == HIDPP_REPORT_LONG_LENGTH &&
-		    !memcmp(data, unifying_name_answer,
-			    sizeof(unifying_name_answer)) &&
-		    ((data[4] & 0xF0) == 0x40))
+		    !memcmp(data, unifying_pairing_answer,
+			    sizeof(unifying_pairing_answer)))
 			device_index = (data[4] & 0x0F) + 1;
 		else
 			return false;
@@ -962,10 +965,24 @@ static int logi_dj_raw_event(struct hid_device *hdev,
 
 	switch (data[0]) {
 	case REPORT_ID_DJ_SHORT:
+		if (size != DJREPORT_SHORT_LENGTH) {
+			dev_err(&hdev->dev, "DJ report of bad size (%d)", size);
+			return false;
+		}
 		return logi_dj_dj_event(hdev, report, data, size);
 	case REPORT_ID_HIDPP_SHORT:
-		/* intentional fallthrough */
+		if (size != HIDPP_REPORT_SHORT_LENGTH) {
+			dev_err(&hdev->dev,
+				"Short HID++ report of bad size (%d)", size);
+			return false;
+		}
+		return logi_dj_hidpp_event(hdev, report, data, size);
 	case REPORT_ID_HIDPP_LONG:
+		if (size != HIDPP_REPORT_LONG_LENGTH) {
+			dev_err(&hdev->dev,
+				"Long HID++ report of bad size (%d)", size);
+			return false;
+		}
 		return logi_dj_hidpp_event(hdev, report, data, size);
 	}
 

@@ -64,7 +64,7 @@
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/ioport.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/delay.h>
 #include <linux/sound.h>
 #include <linux/slab.h>
@@ -80,7 +80,7 @@
 #include <asm/byteorder.h>
 #include <asm/dma.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <asm/sibyte/sb1250_regs.h>
 #include <asm/sibyte/sb1250_int.h>
@@ -1654,7 +1654,7 @@ static int drain_dac(struct cs4297a_state *s, int nonblock)
         s->dma_dac.hwptr = s->dma_dac.swptr = hwptr;
         spin_unlock_irqrestore(&s->lock, flags);
 	remove_wait_queue(&s->dma_dac.wait, &wait);
-	current->state = TASK_RUNNING;
+	__set_current_state(TASK_RUNNING);
 	return 0;
 }
 

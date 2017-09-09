@@ -12,8 +12,10 @@
 #ifndef LINUX_HWRANDOM_H_
 #define LINUX_HWRANDOM_H_
 
+#include <linux/completion.h>
 #include <linux/types.h>
 #include <linux/list.h>
+#include <linux/kref.h>
 
 /**
  * struct hwrng - Hardware Random Number Generator driver
@@ -27,7 +29,8 @@
  *			Returns the number of lower random bytes in "data".
  *			Must not be NULL.    *OBSOLETE*
  * @read:		New API. drivers can fill up to max bytes of data
- *			into the buffer. The buffer is aligned for any type.
+ *			into the buffer. The buffer is aligned for any type
+ *			and max is a multiple of 4 and >= 32 bytes.
  * @priv:		Private data, for use by the RNG driver.
  * @quality:		Estimation of true entropy in RNG's bitstream
  *			(per mill).
@@ -44,12 +47,18 @@ struct hwrng {
 
 	/* internal. */
 	struct list_head list;
+	struct kref ref;
+	struct completion cleanup_done;
 };
+
+struct device;
 
 /** Register a new Hardware Random Number Generator driver. */
 extern int hwrng_register(struct hwrng *rng);
+extern int devm_hwrng_register(struct device *dev, struct hwrng *rng);
 /** Unregister a Hardware Random Number Generator driver. */
 extern void hwrng_unregister(struct hwrng *rng);
+extern void devm_hwrng_unregister(struct device *dve, struct hwrng *rng);
 /** Feed random bits into the pool. */
 extern void add_hwgenerator_randomness(const char *buffer, size_t count, size_t entropy);
 

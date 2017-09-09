@@ -19,7 +19,8 @@
 
 #include <linux/kernel.h>
 #include <linux/export.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/topology.h>
 #include <linux/smp.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
@@ -31,6 +32,7 @@
 #include <linux/cpu.h>
 #include <linux/notifier.h>
 #include <linux/topology.h>
+#include <linux/profile.h>
 
 #include <asm/ptrace.h>
 #include <linux/atomic.h>
@@ -53,6 +55,8 @@
 #include <asm/vdso.h>
 #include <asm/debug.h>
 #include <asm/kexec.h>
+#include <asm/asm-prototypes.h>
+#include <asm/cpu_has_feature.h>
 
 #ifdef DEBUG
 #include <asm/udbg.h>
@@ -190,7 +194,7 @@ int smp_request_message_ipi(int virq, int msg)
 	if (msg < 0 || msg > PPC_MSG_DEBUGGER_BREAK) {
 		return -EINVAL;
 	}
-#if !defined(CONFIG_DEBUGGER) && !defined(CONFIG_KEXEC)
+#if !defined(CONFIG_DEBUGGER) && !defined(CONFIG_KEXEC_CORE)
 	if (msg == PPC_MSG_DEBUGGER_BREAK) {
 		return 1;
 	}
@@ -206,7 +210,7 @@ int smp_request_message_ipi(int virq, int msg)
 
 #ifdef CONFIG_PPC_SMP_MUXED_IPI
 struct cpu_messages {
-	int messages;			/* current messages */
+	long messages;			/* current messages */
 	unsigned long data;		/* data for cause ipi */
 };
 static DEFINE_PER_CPU_SHARED_ALIGNED(struct cpu_messages, ipi_message);
@@ -218,7 +222,7 @@ void smp_muxed_ipi_set_data(int cpu, unsigned long data)
 	info->data = data;
 }
 
-void smp_muxed_ipi_message_pass(int cpu, int msg)
+void smp_muxed_ipi_set_message(int cpu, int msg)
 {
 	struct cpu_messages *info = &per_cpu(ipi_message, cpu);
 	char *message = (char *)&info->messages;
@@ -228,6 +232,13 @@ void smp_muxed_ipi_message_pass(int cpu, int msg)
 	 */
 	smp_mb();
 	message[msg] = 1;
+}
+
+void smp_muxed_ipi_message_pass(int cpu, int msg)
+{
+	struct cpu_messages *info = &per_cpu(ipi_message, cpu);
+
+	smp_muxed_ipi_set_message(cpu, msg);
 	/*
 	 * cause_ipi functions are required to include a full barrier
 	 * before doing whatever causes the IPI.
@@ -236,20 +247,31 @@ void smp_muxed_ipi_message_pass(int cpu, int msg)
 }
 
 #ifdef __BIG_ENDIAN__
-#define IPI_MESSAGE(A) (1 << (24 - 8 * (A)))
+#define IPI_MESSAGE(A) (1uL << ((BITS_PER_LONG - 8) - 8 * (A)))
 #else
-#define IPI_MESSAGE(A) (1 << (8 * (A)))
+#define IPI_MESSAGE(A) (1uL << (8 * (A)))
 #endif
 
 irqreturn_t smp_ipi_demux(void)
 {
 	struct cpu_messages *info = this_cpu_ptr(&ipi_message);
-	unsigned int all;
+	unsigned long all;
 
 	mb();	/* order any irq clear */
 
 	do {
 		all = xchg(&info->messages, 0);
+#if defined(CONFIG_KVM_XICS) && defined(CONFIG_KVM_BOOK3S_HV_POSSIBLE)
+		/*
+		 * Must check for PPC_MSG_RM_HOST_ACTION messages
+		 * before PPC_MSG_CALL_FUNCTION messages because when
+		 * a VM is destroyed, we call kick_all_cpus_sync()
+		 * to ensure that any pending PPC_MSG_RM_HOST_ACTION
+		 * messages have completed before we free any VCPUs.
+		 */
+		if (all & IPI_MESSAGE(PPC_MSG_RM_HOST_ACTION))
+			kvmppc_xics_ipi_action();
+#endif
 		if (all & IPI_MESSAGE(PPC_MSG_CALL_FUNCTION))
 			generic_smp_call_function_interrupt();
 		if (all & IPI_MESSAGE(PPC_MSG_RESCHEDULE))
@@ -304,7 +326,7 @@ void tick_broadcast(const struct cpumask *mask)
 }
 #endif
 
-#if defined(CONFIG_DEBUGGER) || defined(CONFIG_KEXEC)
+#if defined(CONFIG_DEBUGGER) || defined(CONFIG_KEXEC_CORE)
 void smp_send_debugger_break(void)
 {
 	int cpu;
@@ -319,7 +341,7 @@ void smp_send_debugger_break(void)
 }
 #endif
 
-#ifdef CONFIG_KEXEC
+#ifdef CONFIG_KEXEC_CORE
 void crash_send_ipi(void (*crash_ipi_callback)(struct pt_regs *))
 {
 	crash_ipi_function_ptr = crash_ipi_callback;
@@ -427,25 +449,11 @@ void generic_cpu_die(unsigned int cpu)
 
 	for (i = 0; i < 100; i++) {
 		smp_rmb();
-		if (per_cpu(cpu_state, cpu) == CPU_DEAD)
+		if (is_cpu_dead(cpu))
 			return;
 		msleep(100);
 	}
 	printk(KERN_ERR "CPU%d didn't die...\n", cpu);
-}
-
-void generic_mach_cpu_die(void)
-{
-	unsigned int cpu;
-
-	local_irq_disable();
-	idle_task_exit();
-	cpu = smp_processor_id();
-	printk(KERN_DEBUG "CPU%d offline\n", cpu);
-	__this_cpu_write(cpu_state, CPU_DEAD);
-	smp_wmb();
-	while (__this_cpu_read(cpu_state) != CPU_UP_PREPARE)
-		cpu_relax();
 }
 
 void generic_set_cpu_dead(unsigned int cpu)
@@ -466,6 +474,11 @@ void generic_set_cpu_up(unsigned int cpu)
 int generic_check_cpu_restart(unsigned int cpu)
 {
 	return per_cpu(cpu_state, cpu) == CPU_UP_PREPARE;
+}
+
+int is_cpu_dead(unsigned int cpu)
+{
+	return per_cpu(cpu_state, cpu) == CPU_DEAD;
 }
 
 static bool secondaries_inhibited(void)
@@ -555,7 +568,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	if (smp_ops->give_timebase)
 		smp_ops->give_timebase();
 
-	/* Wait until cpu puts itself in the online map */
+	/* Wait until cpu puts itself in the online & active maps */
 	while (!cpu_online(cpu))
 		cpu_relax();
 
@@ -584,6 +597,7 @@ out:
 	of_node_put(np);
 	return id;
 }
+EXPORT_SYMBOL_GPL(cpu_to_core_id);
 
 /* Helper routines for cpu to core mapping */
 int cpu_core_index_of_thread(int cpu)
@@ -694,7 +708,7 @@ void start_secondary(void *unused)
 	unsigned int cpu = smp_processor_id();
 	int i, base;
 
-	atomic_inc(&init_mm.mm_count);
+	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
 
 	smp_store_cpu_info(cpu);
@@ -741,7 +755,7 @@ void start_secondary(void *unused)
 
 	local_irq_enable();
 
-	cpu_startup_entry(CPUHP_ONLINE);
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 
 	BUG();
 }
@@ -773,24 +787,21 @@ static struct sched_domain_topology_level powerpc_topology[] = {
 	{ NULL, },
 };
 
+static __init long smp_setup_cpu_workfn(void *data __always_unused)
+{
+	smp_ops->setup_cpu(boot_cpuid);
+	return 0;
+}
+
 void __init smp_cpus_done(unsigned int max_cpus)
 {
-	cpumask_var_t old_mask;
-
-	/* We want the setup_cpu() here to be called from CPU 0, but our
-	 * init thread may have been "borrowed" by another CPU in the meantime
-	 * se we pin us down to CPU 0 for a short while
+	/*
+	 * We want the setup_cpu() here to be called on the boot CPU, but
+	 * init might run on any CPU, so make sure it's invoked on the boot
+	 * CPU.
 	 */
-	alloc_cpumask_var(&old_mask, GFP_NOWAIT);
-	cpumask_copy(old_mask, tsk_cpus_allowed(current));
-	set_cpus_allowed_ptr(current, cpumask_of(boot_cpuid));
-	
 	if (smp_ops && smp_ops->setup_cpu)
-		smp_ops->setup_cpu(boot_cpuid);
-
-	set_cpus_allowed_ptr(current, old_mask);
-
-	free_cpumask_var(old_mask);
+		work_on_cpu_safe(boot_cpuid, smp_setup_cpu_workfn, NULL);
 
 	if (smp_ops && smp_ops->bringup_done)
 		smp_ops->bringup_done();
@@ -798,7 +809,6 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	dump_numa_cpu_topology();
 
 	set_sched_topology(powerpc_topology);
-
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -817,7 +827,7 @@ int __cpu_disable(void)
 
 	/* Update sibling maps */
 	base = cpu_first_thread_sibling(cpu);
-	for (i = 0; i < threads_per_core; i++) {
+	for (i = 0; i < threads_per_core && base + i < nr_cpu_ids; i++) {
 		cpumask_clear_cpu(cpu, cpu_sibling_mask(base + i));
 		cpumask_clear_cpu(base + i, cpu_sibling_mask(cpu));
 		cpumask_clear_cpu(cpu, cpu_core_mask(base + i));

@@ -46,8 +46,6 @@ enum octeon_feature {
 	OCTEON_FEATURE_SAAD,
 	/* Does this Octeon support the ZIP offload engine? */
 	OCTEON_FEATURE_ZIP,
-	/* Does this Octeon support crypto acceleration using COP2? */
-	OCTEON_FEATURE_CRYPTO,
 	OCTEON_FEATURE_DORM_CRYPTO,
 	/* Does this Octeon support PCI express? */
 	OCTEON_FEATURE_PCIE,
@@ -83,8 +81,27 @@ enum octeon_feature {
 	OCTEON_FEATURE_HFA,
 	OCTEON_FEATURE_DFM,
 	OCTEON_FEATURE_CIU2,
+	OCTEON_FEATURE_CIU3,
+	/* Octeon has FPA first seen on 78XX */
+	OCTEON_FEATURE_FPA3,
+	OCTEON_FEATURE_FAU,
 	OCTEON_MAX_FEATURE
 };
+
+enum octeon_feature_bits {
+	OCTEON_HAS_CRYPTO = 0x0001,	/* Crypto acceleration using COP2 */
+};
+extern enum octeon_feature_bits __octeon_feature_bits;
+
+/**
+ * octeon_has_crypto() - Check if this OCTEON has crypto acceleration support.
+ *
+ * Returns: Non-zero if the feature exists. Zero if the feature does not exist.
+ */
+static inline int octeon_has_crypto(void)
+{
+	return __octeon_feature_bits & OCTEON_HAS_CRYPTO;
+}
 
 /**
  * Determine if the current Octeon supports a specific feature. These
@@ -97,7 +114,7 @@ enum octeon_feature {
  * Returns Non zero if the feature exists. Zero if the feature does not
  *	   exist.
  */
-static inline int octeon_has_feature(enum octeon_feature feature)
+static inline bool octeon_has_feature(enum octeon_feature feature)
 {
 	switch (feature) {
 	case OCTEON_FEATURE_SAAD:
@@ -109,13 +126,14 @@ static inline int octeon_has_feature(enum octeon_feature feature)
 			fus_2.u64 = cvmx_read_csr(CVMX_MIO_FUS_DAT2);
 			return !fus_2.s.nocrypto && !fus_2.s.nomul && fus_2.s.dorm_crypto;
 		} else {
-			return 0;
+			return false;
 		}
 
 	case OCTEON_FEATURE_PCIE:
 		return OCTEON_IS_MODEL(OCTEON_CN56XX)
 			|| OCTEON_IS_MODEL(OCTEON_CN52XX)
-			|| OCTEON_IS_MODEL(OCTEON_CN6XXX);
+			|| OCTEON_IS_MODEL(OCTEON_CN6XXX)
+			|| OCTEON_IS_MODEL(OCTEON_CN7XXX);
 
 	case OCTEON_FEATURE_SRIO:
 		return OCTEON_IS_MODEL(OCTEON_CN63XX)
@@ -176,11 +194,20 @@ static inline int octeon_has_feature(enum octeon_feature feature)
 
 	case OCTEON_FEATURE_CIU2:
 		return OCTEON_IS_MODEL(OCTEON_CN68XX);
+	case OCTEON_FEATURE_CIU3:
+	case OCTEON_FEATURE_FPA3:
+		return OCTEON_IS_MODEL(OCTEON_CN78XX)
+			|| OCTEON_IS_MODEL(OCTEON_CNF75XX)
+			|| OCTEON_IS_MODEL(OCTEON_CN73XX);
+	case OCTEON_FEATURE_FAU:
+		return !(OCTEON_IS_MODEL(OCTEON_CN78XX)
+			 || OCTEON_IS_MODEL(OCTEON_CNF75XX)
+			 || OCTEON_IS_MODEL(OCTEON_CN73XX));
 
 	default:
 		break;
 	}
-	return 0;
+	return false;
 }
 
 #endif /* __OCTEON_FEATURE_H__ */

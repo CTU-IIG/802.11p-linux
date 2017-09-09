@@ -36,7 +36,7 @@
  * Used to report a bss has been scanned
 */
 struct survey_event	{
-	struct ndis_wlan_bssid_ex bss;
+	struct wlan_bssid_ex bss;
 };
 
 /*
@@ -66,7 +66,7 @@ struct joinbss_event {
 struct stassoc_event {
 	unsigned char macaddr[6];
 	unsigned char rsvd[2];
-	int    cam_id;
+	__le32    cam_id;
 };
 
 struct stadel_event {

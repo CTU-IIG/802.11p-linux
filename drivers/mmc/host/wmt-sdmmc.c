@@ -20,6 +20,7 @@
 #include <linux/irq.h>
 #include <linux/clk.h>
 #include <linux/gpio.h>
+#include <linux/interrupt.h>
 
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -744,7 +745,7 @@ static struct wmt_mci_caps wm8505_caps = {
 	.max_blk_size = 2048,
 };
 
-static struct of_device_id wmt_mci_dt_ids[] = {
+static const struct of_device_id wmt_mci_dt_ids[] = {
 	{ .compatible = "wm,wm8505-sdhc", .data = &wm8505_caps },
 	{ /* Sentinel */ },
 };

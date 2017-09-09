@@ -12,10 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  * File: device_cfg.h
  *
  * Purpose: Driver configuration header
@@ -68,20 +64,5 @@ struct _version {
 typedef enum  _chip_type {
 	VT3253 = 1
 } CHIP_TYPE, *PCHIP_TYPE;
-
-#ifdef VIAWET_DEBUG
-#define ASSERT(x)							\
-do {									\
-	if (!(x)) {							\
-		pr_err("assertion %s failed: file %s line %d\n", \
-		       #x, __func__, __LINE__);				\
-		*(int *)0 = 0;						\
-	}								\
-} while (0)
-#define DBG_PORT80(value)                   outb(value, 0x80)
-#else
-#define ASSERT(x)
-#define DBG_PORT80(value)
-#endif
 
 #endif

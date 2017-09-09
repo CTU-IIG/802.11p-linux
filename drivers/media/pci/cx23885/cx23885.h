@@ -15,6 +15,8 @@
  *  GNU General Public License for more details.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/pci.h>
 #include <linux/i2c.h>
 #include <linux/kdev_t.h>
@@ -30,7 +32,7 @@
 #include <media/rc-core.h>
 
 #include "cx23885-reg.h"
-#include "media/cx2341x.h"
+#include "media/drv-intf/cx2341x.h"
 
 #include <linux/mutex.h>
 
@@ -99,6 +101,12 @@
 #define CX23885_BOARD_DVBSKY_S950              49
 #define CX23885_BOARD_DVBSKY_S952              50
 #define CX23885_BOARD_DVBSKY_T982              51
+#define CX23885_BOARD_HAUPPAUGE_HVR5525        52
+#define CX23885_BOARD_HAUPPAUGE_STARBURST      53
+#define CX23885_BOARD_VIEWCAST_260E            54
+#define CX23885_BOARD_VIEWCAST_460E            55
+#define CX23885_BOARD_HAUPPAUGE_QUADHD_DVB     56
+#define CX23885_BOARD_HAUPPAUGE_QUADHD_ATSC    57
 
 #define GPIO_0 0x00000001
 #define GPIO_1 0x00000002
@@ -168,7 +176,7 @@ struct cx23885_riscmem {
 /* buffer for one video frame */
 struct cx23885_buffer {
 	/* common v4l buffer stuff -- must be first */
-	struct vb2_buffer vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head queue;
 
 	/* cx23885 specific */
@@ -251,7 +259,7 @@ struct cx23885_dmaqueue {
 struct cx23885_tsport {
 	struct cx23885_dev *dev;
 
-	int                        nr;
+	unsigned                   nr;
 	int                        sram_chno;
 
 	struct vb2_dvb_frontends   frontends;
@@ -302,11 +310,12 @@ struct cx23885_tsport {
 
 	struct i2c_client *i2c_client_demod;
 	struct i2c_client *i2c_client_tuner;
+	struct i2c_client *i2c_client_sec;
 	struct i2c_client *i2c_client_ci;
 
 	int (*set_frontend)(struct dvb_frontend *fe);
 	int (*fe_set_voltage)(struct dvb_frontend *fe,
-				fe_sec_voltage_t voltage);
+			      enum fe_sec_voltage voltage);
 };
 
 struct cx23885_kernel_ir {
@@ -425,7 +434,6 @@ struct cx23885_dev {
 	struct vb2_queue           vb2_vidq;
 	struct cx23885_dmaqueue    vbiq;
 	struct vb2_queue           vb2_vbiq;
-	void			   *alloc_ctx;
 
 	spinlock_t                 slock;
 
@@ -623,11 +631,6 @@ extern int cx23885_risc_databuffer(struct pci_dev *pci,
 
 /* ----------------------------------------------------------- */
 /* tv norms                                                    */
-
-static inline unsigned int norm_maxw(v4l2_std_id norm)
-{
-	return (norm & V4L2_STD_525_60) ? 720 : 768;
-}
 
 static inline unsigned int norm_maxh(v4l2_std_id norm)
 {

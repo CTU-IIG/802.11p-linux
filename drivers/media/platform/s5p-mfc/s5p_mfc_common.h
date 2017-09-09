@@ -21,15 +21,17 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
-#include <media/videobuf2-core.h>
+#include <media/videobuf2-v4l2.h>
 #include "regs-mfc.h"
 #include "regs-mfc-v8.h"
+
+#define S5P_MFC_NAME		"s5p-mfc"
 
 /* Definitions related to MFC memory */
 
 /* Offset base used to differentiate between CAPTURE and OUTPUT
 *  while mmaping */
-#define DST_QUEUE_OFF_BASE      (TASK_SIZE / 2)
+#define DST_QUEUE_OFF_BASE	(1 << 30)
 
 #define MFC_BANK1_ALLOC_CTX	0
 #define MFC_BANK2_ALLOC_CTX	1
@@ -101,6 +103,8 @@ static inline dma_addr_t s5p_mfc_mem_cookie(void *a, void *b)
 #define S5P_MFC_R2H_CMD_SLICE_DONE_RET		15
 #define S5P_MFC_R2H_CMD_ENC_BUFFER_FUL_RET	16
 #define S5P_MFC_R2H_CMD_ERR_RET			32
+
+#define MFC_MAX_CLOCKS		4
 
 #define mfc_read(dev, offset)		readl(dev->regs_base + (offset))
 #define mfc_write(dev, data, offset)	writel((data), dev->regs_base + \
@@ -179,8 +183,8 @@ struct s5p_mfc_ctx;
  * struct s5p_mfc_buf - MFC buffer
  */
 struct s5p_mfc_buf {
+	struct vb2_v4l2_buffer *b;
 	struct list_head list;
-	struct vb2_buffer *b;
 	union {
 		struct {
 			size_t luma;
@@ -195,9 +199,12 @@ struct s5p_mfc_buf {
  * struct s5p_mfc_pm - power management data structure
  */
 struct s5p_mfc_pm {
-	struct clk	*clock;
 	struct clk	*clock_gate;
-	atomic_t	power;
+	const char	**clk_names;
+	struct clk	*clocks[MFC_MAX_CLOCKS];
+	int		num_clocks;
+	bool		use_clock_gating;
+
 	struct device	*device;
 };
 
@@ -233,6 +240,9 @@ struct s5p_mfc_variant {
 	struct s5p_mfc_buf_size *buf_size;
 	struct s5p_mfc_buf_align *buf_align;
 	char	*fw_name[MFC_FW_MAX_VERSIONS];
+	const char	*clk_names[MFC_MAX_CLOCKS];
+	int		num_clocks;
+	bool		use_clock_gating;
 };
 
 /**
@@ -285,13 +295,14 @@ struct s5p_mfc_priv_buf {
  * @watchdog_cnt:	counter for the watchdog
  * @watchdog_workqueue:	workqueue for the watchdog
  * @watchdog_work:	worker for the watchdog
- * @alloc_ctx:		videobuf2 allocator contexts for two memory banks
  * @enter_suspend:	flag set when entering suspend
  * @ctx_buf:		common context memory (MFCv6)
  * @warn_start:		hardware error code from which warnings start
  * @mfc_ops:		ops structure holding HW operation function pointers
  * @mfc_cmds:		cmd structure holding HW commands function pointers
+ * @mfc_regs:		structure holding MFC registers
  * @fw_ver:		loaded firmware sub-version
+ * risc_on:		flag indicates RISC is on or off
  *
  */
 struct s5p_mfc_dev {
@@ -308,7 +319,7 @@ struct s5p_mfc_dev {
 	struct s5p_mfc_pm	pm;
 	struct s5p_mfc_variant	*variant;
 	int num_inst;
-	spinlock_t irqlock;	/* lock when operating on videobuf2 queues */
+	spinlock_t irqlock;	/* lock when operating on context */
 	spinlock_t condlock;	/* lock when changing/checking if a context is
 					ready to be processed */
 	struct mutex mfc_mutex; /* video_device lock */
@@ -328,7 +339,6 @@ struct s5p_mfc_dev {
 	struct timer_list watchdog_timer;
 	struct workqueue_struct *watchdog_workqueue;
 	struct work_struct watchdog_work;
-	void *alloc_ctx[2];
 	unsigned long enter_suspend;
 
 	struct s5p_mfc_priv_buf ctx_buf;
@@ -653,7 +663,7 @@ struct s5p_mfc_ctx {
 		unsigned int bits;
 	} slice_size;
 
-	struct s5p_mfc_codec_ops *c_ops;
+	const struct s5p_mfc_codec_ops *c_ops;
 
 	struct v4l2_ctrl *ctrls[MFC_MAX_CTRLS];
 	struct v4l2_ctrl_handler ctrl_handler;
@@ -694,13 +704,7 @@ struct mfc_control {
 
 /* Macro for making hardware specific calls */
 #define s5p_mfc_hw_call(f, op, args...) \
-	((f && f->op) ? f->op(args) : -ENODEV)
-
-#define s5p_mfc_hw_call_void(f, op, args...) \
-do { \
-	if (f && f->op) \
-		f->op(args); \
-} while (0)
+	((f && f->op) ? f->op(args) : (typeof(f->op(args)))(-ENODEV))
 
 #define fh_to_ctx(__fh) container_of(__fh, struct s5p_mfc_ctx, fh)
 #define ctrl_to_ctx(__ctrl) \
@@ -710,6 +714,8 @@ void clear_work_bit(struct s5p_mfc_ctx *ctx);
 void set_work_bit(struct s5p_mfc_ctx *ctx);
 void clear_work_bit_irqsave(struct s5p_mfc_ctx *ctx);
 void set_work_bit_irqsave(struct s5p_mfc_ctx *ctx);
+int s5p_mfc_get_new_ctx(struct s5p_mfc_dev *dev);
+void s5p_mfc_cleanup_queue(struct list_head *lh, struct vb2_queue *vq);
 
 #define HAS_PORTNUM(dev)	(dev ? (dev->variant ? \
 				(dev->variant->port_num ? 1 : 0) : 0) : 0)

@@ -17,12 +17,13 @@
 #include <linux/io.h>
 
 #include <asm/exception.h>
+#include <linux/irqchip.h>
 #include <linux/irqdomain.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 
-#include "irqchip.h"
+#include <linux/irqchip/irq-omap-intc.h>
 
 /* Define these here for now until we drop all board-files */
 #define OMAP24XX_IC_BASE	0x480fe000
@@ -48,6 +49,7 @@
 #define INTC_ILR0		0x0100
 
 #define ACTIVEIRQ_MASK		0x7f	/* omap2/3 active interrupt bits */
+#define SPURIOUSIRQ_MASK	(0x1ffffff << 7)
 #define INTCPS_NR_ILR_REGS	128
 #define INTCPS_NR_MIR_REGS	4
 
@@ -208,7 +210,6 @@ static int __init omap_alloc_gc_of(struct irq_domain *d, void __iomem *base)
 		ct = gc->chip_types;
 
 		ct->type = IRQ_TYPE_LEVEL_MASK;
-		ct->handler = handle_level_irq;
 
 		ct->chip.irq_ack = omap_mask_ack_irq;
 		ct->chip.irq_mask = irq_gc_mask_disable_reg;
@@ -263,7 +264,7 @@ static int __init omap_init_irq_of(struct device_node *node)
 	return ret;
 }
 
-static int __init omap_init_irq_legacy(u32 base)
+static int __init omap_init_irq_legacy(u32 base, struct device_node *node)
 {
 	int j, irq_base;
 
@@ -277,7 +278,7 @@ static int __init omap_init_irq_legacy(u32 base)
 		irq_base = 0;
 	}
 
-	domain = irq_domain_add_legacy(NULL, omap_nr_irqs, irq_base, 0,
+	domain = irq_domain_add_legacy(node, omap_nr_irqs, irq_base, 0,
 			&irq_domain_simple_ops, NULL);
 
 	omap_irq_soft_reset();
@@ -301,10 +302,26 @@ static int __init omap_init_irq(u32 base, struct device_node *node)
 {
 	int ret;
 
-	if (node)
+	/*
+	 * FIXME legacy OMAP DMA driver sitting under arch/arm/plat-omap/dma.c
+	 * depends is still not ready for linear IRQ domains; because of that
+	 * we need to temporarily "blacklist" OMAP2 and OMAP3 devices from using
+	 * linear IRQ Domain until that driver is finally fixed.
+	 */
+	if (of_device_is_compatible(node, "ti,omap2-intc") ||
+			of_device_is_compatible(node, "ti,omap3-intc")) {
+		struct resource res;
+
+		if (of_address_to_resource(node, 0, &res))
+			return -ENOMEM;
+
+		base = res.start;
+		ret = omap_init_irq_legacy(base, node);
+	} else if (node) {
 		ret = omap_init_irq_of(node);
-	else
-		ret = omap_init_irq_legacy(base);
+	} else {
+		ret = omap_init_irq_legacy(base, NULL);
+	}
 
 	if (ret == 0)
 		omap_irq_enable_protection();
@@ -315,59 +332,42 @@ static int __init omap_init_irq(u32 base, struct device_node *node)
 static asmlinkage void __exception_irq_entry
 omap_intc_handle_irq(struct pt_regs *regs)
 {
-	u32 irqnr = 0;
-	int handled_irq = 0;
-	int i;
+	extern unsigned long irq_err_count;
+	u32 irqnr;
 
-	do {
-		for (i = 0; i < omap_nr_pending; i++) {
-			irqnr = intc_readl(INTC_PENDING_IRQ0 + (0x20 * i));
-			if (irqnr)
-				goto out;
-		}
-
-out:
-		if (!irqnr)
-			break;
-
-		irqnr = intc_readl(INTC_SIR);
-		irqnr &= ACTIVEIRQ_MASK;
-
-		if (irqnr) {
-			handle_domain_irq(domain, irqnr, regs);
-			handled_irq = 1;
-		}
-	} while (irqnr);
+	irqnr = intc_readl(INTC_SIR);
 
 	/*
-	 * If an irq is masked or deasserted while active, we will
-	 * keep ending up here with no irq handled. So remove it from
-	 * the INTC with an ack.
+	 * A spurious IRQ can result if interrupt that triggered the
+	 * sorting is no longer active during the sorting (10 INTC
+	 * functional clock cycles after interrupt assertion). Or a
+	 * change in interrupt mask affected the result during sorting
+	 * time. There is no special handling required except ignoring
+	 * the SIR register value just read and retrying.
+	 * See section 6.2.5 of AM335x TRM Literature Number: SPRUH73K
+	 *
+	 * Many a times, a spurious interrupt situation has been fixed
+	 * by adding a flush for the posted write acking the IRQ in
+	 * the device driver. Typically, this is going be the device
+	 * driver whose interrupt was handled just before the spurious
+	 * IRQ occurred. Pay attention to those device drivers if you
+	 * run into hitting the spurious IRQ condition below.
 	 */
-	if (!handled_irq)
+	if (unlikely((irqnr & SPURIOUSIRQ_MASK) == SPURIOUSIRQ_MASK)) {
+		pr_err_once("%s: spurious irq!\n", __func__);
+		irq_err_count++;
 		omap_ack_irq(NULL);
-}
+		return;
+	}
 
-void __init omap2_init_irq(void)
-{
-	omap_nr_irqs = 96;
-	omap_nr_pending = 3;
-	omap_init_irq(OMAP24XX_IC_BASE, NULL);
-	set_handle_irq(omap_intc_handle_irq);
+	irqnr &= ACTIVEIRQ_MASK;
+	handle_domain_irq(domain, irqnr, regs);
 }
 
 void __init omap3_init_irq(void)
 {
 	omap_nr_irqs = 96;
 	omap_nr_pending = 3;
-	omap_init_irq(OMAP34XX_IC_BASE, NULL);
-	set_handle_irq(omap_intc_handle_irq);
-}
-
-void __init ti81xx_init_irq(void)
-{
-	omap_nr_irqs = 96;
-	omap_nr_pending = 4;
 	omap_init_irq(OMAP34XX_IC_BASE, NULL);
 	set_handle_irq(omap_intc_handle_irq);
 }
@@ -383,7 +383,9 @@ static int __init intc_of_init(struct device_node *node,
 	if (WARN_ON(!node))
 		return -ENODEV;
 
-	if (of_device_is_compatible(node, "ti,am33xx-intc")) {
+	if (of_device_is_compatible(node, "ti,dm814-intc") ||
+	    of_device_is_compatible(node, "ti,dm816-intc") ||
+	    of_device_is_compatible(node, "ti,am33xx-intc")) {
 		omap_nr_irqs = 128;
 		omap_nr_pending = 4;
 	}
@@ -399,4 +401,6 @@ static int __init intc_of_init(struct device_node *node,
 
 IRQCHIP_DECLARE(omap2_intc, "ti,omap2-intc", intc_of_init);
 IRQCHIP_DECLARE(omap3_intc, "ti,omap3-intc", intc_of_init);
+IRQCHIP_DECLARE(dm814x_intc, "ti,dm814-intc", intc_of_init);
+IRQCHIP_DECLARE(dm816x_intc, "ti,dm816-intc", intc_of_init);
 IRQCHIP_DECLARE(am33xx_intc, "ti,am33xx-intc", intc_of_init);

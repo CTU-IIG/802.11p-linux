@@ -139,7 +139,9 @@ struct sh_mobile_i2c_data {
 	int pos;
 	int sr;
 	bool send_stop;
+	bool stop_after_dma;
 
+	struct resource *res;
 	struct dma_chan *dma_tx;
 	struct dma_chan *dma_rx;
 	struct scatterlist sg;
@@ -148,6 +150,7 @@ struct sh_mobile_i2c_data {
 
 struct sh_mobile_dt_config {
 	int clks_per_count;
+	void (*setup)(struct sh_mobile_i2c_data *pd);
 };
 
 #define IIC_FLAG_HAS_ICIC67	(1 << 0)
@@ -162,6 +165,7 @@ struct sh_mobile_dt_config {
 #define ICIC			0x0c
 #define ICCL			0x10
 #define ICCH			0x14
+#define ICSTART			0x70
 
 /* Register bits */
 #define ICCR_ICE		0x80
@@ -187,6 +191,8 @@ struct sh_mobile_dt_config {
 #define ICIC_TACKE		0x04
 #define ICIC_WAITE		0x02
 #define ICIC_DTEE		0x01
+
+#define ICSTART_ICSTART		0x10
 
 static void iic_wr(struct sh_mobile_i2c_data *pd, int offs, unsigned char data)
 {
@@ -392,8 +398,7 @@ static void sh_mobile_i2c_get_data(struct sh_mobile_i2c_data *pd,
 {
 	switch (pd->pos) {
 	case -1:
-		*buf = (pd->msg->addr & 0x7f) << 1;
-		*buf |= (pd->msg->flags & I2C_M_RD) ? 1 : 0;
+		*buf = i2c_8bit_addr_from_msg(pd->msg);
 		break;
 	default:
 		*buf = pd->msg->buf[pd->pos];
@@ -406,7 +411,7 @@ static int sh_mobile_i2c_isr_tx(struct sh_mobile_i2c_data *pd)
 
 	if (pd->pos == pd->msg->len) {
 		/* Send stop if we haven't yet (DMA case) */
-		if (pd->send_stop && (iic_rd(pd, ICCR) & ICCR_BBSY))
+		if (pd->send_stop && pd->stop_after_dma)
 			i2c_op(pd, OP_TX_STOP, 0);
 		return 1;
 	}
@@ -448,6 +453,13 @@ static int sh_mobile_i2c_isr_rx(struct sh_mobile_i2c_data *pd)
 		real_pos = pd->pos - 2;
 
 		if (pd->pos == pd->msg->len) {
+			if (pd->stop_after_dma) {
+				/* Simulate PIO end condition after DMA transfer */
+				i2c_op(pd, OP_RX_STOP, 0);
+				pd->pos++;
+				break;
+			}
+
 			if (real_pos < 0) {
 				i2c_op(pd, OP_RX_STOP, 0);
 				break;
@@ -535,8 +547,45 @@ static void sh_mobile_i2c_dma_callback(void *data)
 
 	sh_mobile_i2c_dma_unmap(pd);
 	pd->pos = pd->msg->len;
+	pd->stop_after_dma = true;
 
 	iic_set_clr(pd, ICIC, 0, ICIC_TDMAE | ICIC_RDMAE);
+}
+
+static struct dma_chan *sh_mobile_i2c_request_dma_chan(struct device *dev,
+				enum dma_transfer_direction dir, dma_addr_t port_addr)
+{
+	struct dma_chan *chan;
+	struct dma_slave_config cfg;
+	char *chan_name = dir == DMA_MEM_TO_DEV ? "tx" : "rx";
+	int ret;
+
+	chan = dma_request_slave_channel_reason(dev, chan_name);
+	if (IS_ERR(chan)) {
+		ret = PTR_ERR(chan);
+		dev_dbg(dev, "request_channel failed for %s (%d)\n", chan_name, ret);
+		return chan;
+	}
+
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.direction = dir;
+	if (dir == DMA_MEM_TO_DEV) {
+		cfg.dst_addr = port_addr;
+		cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
+	} else {
+		cfg.src_addr = port_addr;
+		cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
+	}
+
+	ret = dmaengine_slave_config(chan, &cfg);
+	if (ret) {
+		dev_dbg(dev, "slave_config failed for %s (%d)\n", chan_name, ret);
+		dma_release_channel(chan);
+		return ERR_PTR(ret);
+	}
+
+	dev_dbg(dev, "got DMA channel for %s\n", chan_name);
+	return chan;
 }
 
 static void sh_mobile_i2c_xfer_dma(struct sh_mobile_i2c_data *pd)
@@ -548,11 +597,20 @@ static void sh_mobile_i2c_xfer_dma(struct sh_mobile_i2c_data *pd)
 	dma_addr_t dma_addr;
 	dma_cookie_t cookie;
 
-	if (!chan)
+	if (PTR_ERR(chan) == -EPROBE_DEFER) {
+		if (read)
+			chan = pd->dma_rx = sh_mobile_i2c_request_dma_chan(pd->dev, DMA_DEV_TO_MEM,
+									   pd->res->start + ICDR);
+		else
+			chan = pd->dma_tx = sh_mobile_i2c_request_dma_chan(pd->dev, DMA_MEM_TO_DEV,
+									   pd->res->start + ICDR);
+	}
+
+	if (IS_ERR(chan))
 		return;
 
 	dma_addr = dma_map_single(chan->device->dev, pd->msg->buf, pd->msg->len, dir);
-	if (dma_mapping_error(pd->dev, dma_addr)) {
+	if (dma_mapping_error(chan->device->dev, dma_addr)) {
 		dev_dbg(pd->dev, "dma map failed, using PIO\n");
 		return;
 	}
@@ -671,7 +729,8 @@ static int sh_mobile_i2c_xfer(struct i2c_adapter *adapter,
 	struct sh_mobile_i2c_data *pd = i2c_get_adapdata(adapter);
 	struct i2c_msg	*msg;
 	int err = 0;
-	int i, k;
+	int i;
+	long timeout;
 
 	activate_ch(pd);
 
@@ -680,6 +739,7 @@ static int sh_mobile_i2c_xfer(struct i2c_adapter *adapter,
 		bool do_start = pd->send_stop || !i;
 		msg = &msgs[i];
 		pd->send_stop = i == num - 1 || msg->flags & I2C_M_STOP;
+		pd->stop_after_dma = false;
 
 		err = start_ch(pd, msg, do_start);
 		if (err)
@@ -689,10 +749,10 @@ static int sh_mobile_i2c_xfer(struct i2c_adapter *adapter,
 			i2c_op(pd, OP_START, 0);
 
 		/* The interrupt handler takes care of the rest... */
-		k = wait_event_timeout(pd->wait,
+		timeout = wait_event_timeout(pd->wait,
 				       pd->sr & (ICSR_TACK | SW_DONE),
-				       5 * HZ);
-		if (!k) {
+				       adapter->timeout);
+		if (!timeout) {
 			dev_err(pd->dev, "Transfer request timed out\n");
 			if (pd->dma_direction != DMA_NONE)
 				sh_mobile_i2c_cleanup_dma(pd);
@@ -721,10 +781,37 @@ static u32 sh_mobile_i2c_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL | I2C_FUNC_PROTOCOL_MANGLING;
 }
 
-static struct i2c_algorithm sh_mobile_i2c_algorithm = {
+static const struct i2c_algorithm sh_mobile_i2c_algorithm = {
 	.functionality	= sh_mobile_i2c_func,
 	.master_xfer	= sh_mobile_i2c_xfer,
 };
+
+/*
+ * r8a7740 chip has lasting errata on I2C I/O pad reset.
+ * this is work-around for it.
+ */
+static void sh_mobile_i2c_r8a7740_workaround(struct sh_mobile_i2c_data *pd)
+{
+	iic_set_clr(pd, ICCR, ICCR_ICE, 0);
+	iic_rd(pd, ICCR); /* dummy read */
+
+	iic_set_clr(pd, ICSTART, ICSTART_ICSTART, 0);
+	iic_rd(pd, ICSTART); /* dummy read */
+
+	udelay(10);
+
+	iic_wr(pd, ICCR, ICCR_SCP);
+	iic_wr(pd, ICSTART, 0);
+
+	udelay(10);
+
+	iic_wr(pd, ICCR, ICCR_TRS);
+	udelay(10);
+	iic_wr(pd, ICCR, 0);
+	udelay(10);
+	iic_wr(pd, ICCR, ICCR_TRS);
+	udelay(10);
+}
 
 static const struct sh_mobile_dt_config default_dt_config = {
 	.clks_per_count = 1,
@@ -734,69 +821,38 @@ static const struct sh_mobile_dt_config fast_clock_dt_config = {
 	.clks_per_count = 2,
 };
 
+static const struct sh_mobile_dt_config r8a7740_dt_config = {
+	.clks_per_count = 1,
+	.setup = sh_mobile_i2c_r8a7740_workaround,
+};
+
 static const struct of_device_id sh_mobile_i2c_dt_ids[] = {
-	{ .compatible = "renesas,rmobile-iic", .data = &default_dt_config },
 	{ .compatible = "renesas,iic-r8a73a4", .data = &fast_clock_dt_config },
+	{ .compatible = "renesas,iic-r8a7740", .data = &r8a7740_dt_config },
 	{ .compatible = "renesas,iic-r8a7790", .data = &fast_clock_dt_config },
 	{ .compatible = "renesas,iic-r8a7791", .data = &fast_clock_dt_config },
 	{ .compatible = "renesas,iic-r8a7792", .data = &fast_clock_dt_config },
 	{ .compatible = "renesas,iic-r8a7793", .data = &fast_clock_dt_config },
 	{ .compatible = "renesas,iic-r8a7794", .data = &fast_clock_dt_config },
+	{ .compatible = "renesas,rcar-gen2-iic", .data = &fast_clock_dt_config },
+	{ .compatible = "renesas,iic-r8a7795", .data = &fast_clock_dt_config },
+	{ .compatible = "renesas,rcar-gen3-iic", .data = &fast_clock_dt_config },
 	{ .compatible = "renesas,iic-sh73a0", .data = &fast_clock_dt_config },
+	{ .compatible = "renesas,rmobile-iic", .data = &default_dt_config },
 	{},
 };
 MODULE_DEVICE_TABLE(of, sh_mobile_i2c_dt_ids);
 
-static int sh_mobile_i2c_request_dma_chan(struct device *dev, enum dma_transfer_direction dir,
-					  dma_addr_t port_addr, struct dma_chan **chan_ptr)
-{
-	struct dma_chan *chan;
-	struct dma_slave_config cfg;
-	char *chan_name = dir == DMA_MEM_TO_DEV ? "tx" : "rx";
-	int ret;
-
-	*chan_ptr = NULL;
-
-	chan = dma_request_slave_channel_reason(dev, chan_name);
-	if (IS_ERR(chan)) {
-		ret = PTR_ERR(chan);
-		dev_dbg(dev, "request_channel failed for %s (%d)\n", chan_name, ret);
-		return ret;
-	}
-
-	memset(&cfg, 0, sizeof(cfg));
-	cfg.direction = dir;
-	if (dir == DMA_MEM_TO_DEV) {
-		cfg.dst_addr = port_addr;
-		cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
-	} else {
-		cfg.src_addr = port_addr;
-		cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
-	}
-
-	ret = dmaengine_slave_config(chan, &cfg);
-	if (ret) {
-		dev_dbg(dev, "slave_config failed for %s (%d)\n", chan_name, ret);
-		dma_release_channel(chan);
-		return ret;
-	}
-
-	*chan_ptr = chan;
-
-	dev_dbg(dev, "got DMA channel for %s\n", chan_name);
-	return 0;
-}
-
 static void sh_mobile_i2c_release_dma(struct sh_mobile_i2c_data *pd)
 {
-	if (pd->dma_tx) {
+	if (!IS_ERR(pd->dma_tx)) {
 		dma_release_channel(pd->dma_tx);
-		pd->dma_tx = NULL;
+		pd->dma_tx = ERR_PTR(-EPROBE_DEFER);
 	}
 
-	if (pd->dma_rx) {
+	if (!IS_ERR(pd->dma_rx)) {
 		dma_release_channel(pd->dma_rx);
-		pd->dma_rx = NULL;
+		pd->dma_rx = ERR_PTR(-EPROBE_DEFER);
 	}
 }
 
@@ -849,6 +905,7 @@ static int sh_mobile_i2c_probe(struct platform_device *dev)
 
 	res = platform_get_resource(dev, IORESOURCE_MEM, 0);
 
+	pd->res = res;
 	pd->reg = devm_ioremap_resource(&dev->dev, res);
 	if (IS_ERR(pd->reg))
 		return PTR_ERR(pd->reg);
@@ -868,6 +925,9 @@ static int sh_mobile_i2c_probe(struct platform_device *dev)
 
 			config = match->data;
 			pd->clks_per_count = config->clks_per_count;
+
+			if (config->setup)
+				config->setup(pd);
 		}
 	} else {
 		if (pdata && pdata->bus_speed)
@@ -889,17 +949,7 @@ static int sh_mobile_i2c_probe(struct platform_device *dev)
 	/* Init DMA */
 	sg_init_table(&pd->sg, 1);
 	pd->dma_direction = DMA_NONE;
-	ret = sh_mobile_i2c_request_dma_chan(pd->dev, DMA_DEV_TO_MEM,
-					     res->start + ICDR, &pd->dma_rx);
-	if (ret == -EPROBE_DEFER)
-		return ret;
-
-	ret = sh_mobile_i2c_request_dma_chan(pd->dev, DMA_MEM_TO_DEV,
-					     res->start + ICDR, &pd->dma_tx);
-	if (ret == -EPROBE_DEFER) {
-		sh_mobile_i2c_release_dma(pd);
-		return ret;
-	}
+	pd->dma_rx = pd->dma_tx = ERR_PTR(-EPROBE_DEFER);
 
 	/* Enable Runtime PM for this device.
 	 *
@@ -933,12 +983,10 @@ static int sh_mobile_i2c_probe(struct platform_device *dev)
 	ret = i2c_add_numbered_adapter(adap);
 	if (ret < 0) {
 		sh_mobile_i2c_release_dma(pd);
-		dev_err(&dev->dev, "cannot add numbered adapter\n");
 		return ret;
 	}
 
-	dev_info(&dev->dev, "I2C adapter %d, bus speed %lu Hz, DMA=%c\n",
-		 adap->nr, pd->bus_speed, (pd->dma_rx || pd->dma_tx) ? 'y' : 'n');
+	dev_info(&dev->dev, "I2C adapter %d, bus speed %lu Hz\n", adap->nr, pd->bus_speed);
 
 	return 0;
 }

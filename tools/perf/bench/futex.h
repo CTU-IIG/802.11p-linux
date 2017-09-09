@@ -56,6 +56,24 @@ futex_wake(u_int32_t *uaddr, int nr_wake, int opflags)
 }
 
 /**
+ * futex_lock_pi() - block on uaddr as a PI mutex
+ */
+static inline int
+futex_lock_pi(u_int32_t *uaddr, struct timespec *timeout, int opflags)
+{
+	return futex(uaddr, FUTEX_LOCK_PI, 0, timeout, NULL, 0, opflags);
+}
+
+/**
+ * futex_unlock_pi() - release uaddr as a PI mutex, waking the top waiter
+ */
+static inline int
+futex_unlock_pi(u_int32_t *uaddr, int opflags)
+{
+	return futex(uaddr, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0, opflags);
+}
+
+/**
 * futex_cmp_requeue() - requeue tasks from uaddr to uaddr2
 * @nr_wake:        wake up to this many tasks
 * @nr_requeue:        requeue up to this many tasks
@@ -67,5 +85,16 @@ futex_cmp_requeue(u_int32_t *uaddr, u_int32_t val, u_int32_t *uaddr2, int nr_wak
 	return futex(uaddr, FUTEX_CMP_REQUEUE, nr_wake, nr_requeue, uaddr2,
 		 val, opflags);
 }
+
+#ifndef HAVE_PTHREAD_ATTR_SETAFFINITY_NP
+#include <pthread.h>
+#include <linux/compiler.h>
+static inline int pthread_attr_setaffinity_np(pthread_attr_t *attr __maybe_unused,
+					      size_t cpusetsize __maybe_unused,
+					      cpu_set_t *cpuset __maybe_unused)
+{
+	return 0;
+}
+#endif
 
 #endif /* _FUTEX_H */

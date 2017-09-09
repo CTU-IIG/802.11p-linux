@@ -12,10 +12,12 @@
 
 #include <uapi/drm/tegra_drm.h>
 #include <linux/host1x.h>
+#include <linux/of_gpio.h>
 
 #include <drm/drmP.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_encoder.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fixed.h>
 
@@ -29,7 +31,7 @@ struct tegra_fb {
 	unsigned int num_planes;
 };
 
-#ifdef CONFIG_DRM_TEGRA_FBDEV
+#ifdef CONFIG_DRM_FBDEV_EMULATION
 struct tegra_fbdev {
 	struct drm_fb_helper base;
 	struct tegra_fb *fb;
@@ -45,11 +47,19 @@ struct tegra_drm {
 	struct mutex clients_lock;
 	struct list_head clients;
 
-#ifdef CONFIG_DRM_TEGRA_FBDEV
+#ifdef CONFIG_DRM_FBDEV_EMULATION
 	struct tegra_fbdev *fbdev;
 #endif
 
 	unsigned int pitch_align;
+
+	struct {
+		struct drm_atomic_state *state;
+		struct work_struct work;
+		struct mutex lock;
+	} commit;
+
+	struct drm_atomic_state *state;
 };
 
 struct tegra_drm_client;
@@ -98,13 +108,21 @@ int tegra_drm_exit(struct tegra_drm *tegra);
 struct tegra_dc_soc_info;
 struct tegra_output;
 
+struct tegra_dc_stats {
+	unsigned long frames;
+	unsigned long vblank;
+	unsigned long underflow;
+	unsigned long overflow;
+};
+
 struct tegra_dc {
 	struct host1x_client client;
+	struct host1x_syncpt *syncpt;
 	struct device *dev;
 	spinlock_t lock;
 
 	struct drm_crtc base;
-	int powergate;
+	unsigned int powergate;
 	int pipe;
 
 	struct clk *clk;
@@ -114,6 +132,7 @@ struct tegra_dc {
 
 	struct tegra_output *rgb;
 
+	struct tegra_dc_stats stats;
 	struct list_head list;
 
 	struct drm_info_list *debugfs_files;
@@ -164,50 +183,35 @@ struct tegra_dc_window {
 		unsigned int h;
 	} dst;
 	unsigned int bits_per_pixel;
-	unsigned int format;
-	unsigned int swap;
 	unsigned int stride[2];
 	unsigned long base[3];
 	bool bottom_up;
 
 	struct tegra_bo_tiling tiling;
+	u32 format;
+	u32 swap;
 };
 
 /* from dc.c */
+u32 tegra_dc_get_vblank_counter(struct tegra_dc *dc);
 void tegra_dc_enable_vblank(struct tegra_dc *dc);
 void tegra_dc_disable_vblank(struct tegra_dc *dc);
-void tegra_dc_cancel_page_flip(struct drm_crtc *crtc, struct drm_file *file);
-
-struct tegra_output_ops {
-	int (*enable)(struct tegra_output *output);
-	int (*disable)(struct tegra_output *output);
-	int (*setup_clock)(struct tegra_output *output, struct clk *clk,
-			   unsigned long pclk, unsigned int *div);
-	int (*check_mode)(struct tegra_output *output,
-			  struct drm_display_mode *mode,
-			  enum drm_mode_status *status);
-	enum drm_connector_status (*detect)(struct tegra_output *output);
-};
-
-enum tegra_output_type {
-	TEGRA_OUTPUT_RGB,
-	TEGRA_OUTPUT_HDMI,
-	TEGRA_OUTPUT_DSI,
-	TEGRA_OUTPUT_EDP,
-};
+void tegra_dc_commit(struct tegra_dc *dc);
+int tegra_dc_state_setup_clock(struct tegra_dc *dc,
+			       struct drm_crtc_state *crtc_state,
+			       struct clk *clk, unsigned long pclk,
+			       unsigned int div);
 
 struct tegra_output {
 	struct device_node *of_node;
 	struct device *dev;
-
-	const struct tegra_output_ops *ops;
-	enum tegra_output_type type;
 
 	struct drm_panel *panel;
 	struct i2c_adapter *ddc;
 	const struct edid *edid;
 	unsigned int hpd_irq;
 	int hpd_gpio;
+	enum of_gpio_flags hpd_gpio_flags;
 
 	struct drm_encoder encoder;
 	struct drm_connector connector;
@@ -223,42 +227,6 @@ static inline struct tegra_output *connector_to_output(struct drm_connector *c)
 	return container_of(c, struct tegra_output, connector);
 }
 
-static inline int tegra_output_enable(struct tegra_output *output)
-{
-	if (output && output->ops && output->ops->enable)
-		return output->ops->enable(output);
-
-	return output ? -ENOSYS : -EINVAL;
-}
-
-static inline int tegra_output_disable(struct tegra_output *output)
-{
-	if (output && output->ops && output->ops->disable)
-		return output->ops->disable(output);
-
-	return output ? -ENOSYS : -EINVAL;
-}
-
-static inline int tegra_output_setup_clock(struct tegra_output *output,
-					   struct clk *clk, unsigned long pclk,
-					   unsigned int *div)
-{
-	if (output && output->ops && output->ops->setup_clock)
-		return output->ops->setup_clock(output, clk, pclk, div);
-
-	return output ? -ENOSYS : -EINVAL;
-}
-
-static inline int tegra_output_check_mode(struct tegra_output *output,
-					  struct drm_display_mode *mode,
-					  enum drm_mode_status *status)
-{
-	if (output && output->ops && output->ops->check_mode)
-		return output->ops->check_mode(output, mode, status);
-
-	return output ? -ENOSYS : -EINVAL;
-}
-
 /* from rgb.c */
 int tegra_dc_rgb_probe(struct tegra_dc *dc);
 int tegra_dc_rgb_remove(struct tegra_dc *dc);
@@ -267,23 +235,29 @@ int tegra_dc_rgb_exit(struct tegra_dc *dc);
 
 /* from output.c */
 int tegra_output_probe(struct tegra_output *output);
-int tegra_output_remove(struct tegra_output *output);
+void tegra_output_remove(struct tegra_output *output);
 int tegra_output_init(struct drm_device *drm, struct tegra_output *output);
-int tegra_output_exit(struct tegra_output *output);
+void tegra_output_exit(struct tegra_output *output);
+
+int tegra_output_connector_get_modes(struct drm_connector *connector);
+enum drm_connector_status
+tegra_output_connector_detect(struct drm_connector *connector, bool force);
+void tegra_output_connector_destroy(struct drm_connector *connector);
+
+void tegra_output_encoder_destroy(struct drm_encoder *encoder);
 
 /* from dpaux.c */
-struct tegra_dpaux;
 struct drm_dp_link;
 
-struct tegra_dpaux *tegra_dpaux_find_by_of_node(struct device_node *np);
-enum drm_connector_status tegra_dpaux_detect(struct tegra_dpaux *dpaux);
-int tegra_dpaux_attach(struct tegra_dpaux *dpaux, struct tegra_output *output);
-int tegra_dpaux_detach(struct tegra_dpaux *dpaux);
-int tegra_dpaux_enable(struct tegra_dpaux *dpaux);
-int tegra_dpaux_disable(struct tegra_dpaux *dpaux);
-int tegra_dpaux_prepare(struct tegra_dpaux *dpaux, u8 encoding);
-int tegra_dpaux_train(struct tegra_dpaux *dpaux, struct drm_dp_link *link,
-		      u8 pattern);
+struct drm_dp_aux *drm_dp_aux_find_by_of_node(struct device_node *np);
+enum drm_connector_status drm_dp_aux_detect(struct drm_dp_aux *aux);
+int drm_dp_aux_attach(struct drm_dp_aux *aux, struct tegra_output *output);
+int drm_dp_aux_detach(struct drm_dp_aux *aux);
+int drm_dp_aux_enable(struct drm_dp_aux *aux);
+int drm_dp_aux_disable(struct drm_dp_aux *aux);
+int drm_dp_aux_prepare(struct drm_dp_aux *aux, u8 encoding);
+int drm_dp_aux_train(struct drm_dp_aux *aux, struct drm_dp_link *link,
+		     u8 pattern);
 
 /* from fb.c */
 struct tegra_bo *tegra_fb_get_plane(struct drm_framebuffer *framebuffer,
@@ -291,19 +265,25 @@ struct tegra_bo *tegra_fb_get_plane(struct drm_framebuffer *framebuffer,
 bool tegra_fb_is_bottom_up(struct drm_framebuffer *framebuffer);
 int tegra_fb_get_tiling(struct drm_framebuffer *framebuffer,
 			struct tegra_bo_tiling *tiling);
+struct drm_framebuffer *tegra_fb_create(struct drm_device *drm,
+					struct drm_file *file,
+					const struct drm_mode_fb_cmd2 *cmd);
 int tegra_drm_fb_prepare(struct drm_device *drm);
 void tegra_drm_fb_free(struct drm_device *drm);
 int tegra_drm_fb_init(struct drm_device *drm);
 void tegra_drm_fb_exit(struct drm_device *drm);
-#ifdef CONFIG_DRM_TEGRA_FBDEV
+void tegra_drm_fb_suspend(struct drm_device *drm);
+void tegra_drm_fb_resume(struct drm_device *drm);
+#ifdef CONFIG_DRM_FBDEV_EMULATION
 void tegra_fbdev_restore_mode(struct tegra_fbdev *fbdev);
+void tegra_fb_output_poll_changed(struct drm_device *drm);
 #endif
 
 extern struct platform_driver tegra_dc_driver;
-extern struct platform_driver tegra_dsi_driver;
-extern struct platform_driver tegra_sor_driver;
 extern struct platform_driver tegra_hdmi_driver;
+extern struct platform_driver tegra_dsi_driver;
 extern struct platform_driver tegra_dpaux_driver;
+extern struct platform_driver tegra_sor_driver;
 extern struct platform_driver tegra_gr2d_driver;
 extern struct platform_driver tegra_gr3d_driver;
 

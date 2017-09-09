@@ -47,7 +47,7 @@ int coda_open(struct inode *i, struct file *f);
 int coda_release(struct inode *i, struct file *f);
 int coda_permission(struct inode *inode, int mask);
 int coda_revalidate_inode(struct inode *);
-int coda_getattr(struct vfsmount *, struct dentry *, struct kstat *);
+int coda_getattr(const struct path *, struct kstat *, u32, unsigned int);
 int coda_setattr(struct dentry *, struct iattr *);
 
 /* this file:  heloers */
@@ -72,14 +72,13 @@ void coda_sysctl_clean(void);
 } while (0)
 
 
-#define CODA_FREE(ptr,size) \
-    do { if (size < PAGE_SIZE) kfree((ptr)); else vfree((ptr)); } while (0)
+#define CODA_FREE(ptr, size) kvfree((ptr))
 
 /* inode to cnode access functions */
 
 static inline struct coda_inode_info *ITOC(struct inode *inode)
 {
-	return list_entry(inode, struct coda_inode_info, vfs_inode);
+	return container_of(inode, struct coda_inode_info, vfs_inode);
 }
 
 static __inline__ struct CodaFid *coda_i2f(struct inode *inode)

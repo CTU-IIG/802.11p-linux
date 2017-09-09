@@ -6,7 +6,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -53,50 +53,6 @@ ACPI_MODULE_NAME("nsxfobj")
 
 /*******************************************************************************
  *
- * FUNCTION:    acpi_get_id
- *
- * PARAMETERS:  Handle          - Handle of object whose id is desired
- *              ret_id          - Where the id will be placed
- *
- * RETURN:      Status
- *
- * DESCRIPTION: This routine returns the owner id associated with a handle
- *
- ******************************************************************************/
-acpi_status acpi_get_id(acpi_handle handle, acpi_owner_id * ret_id)
-{
-	struct acpi_namespace_node *node;
-	acpi_status status;
-
-	/* Parameter Validation */
-
-	if (!ret_id) {
-		return (AE_BAD_PARAMETER);
-	}
-
-	status = acpi_ut_acquire_mutex(ACPI_MTX_NAMESPACE);
-	if (ACPI_FAILURE(status)) {
-		return (status);
-	}
-
-	/* Convert and validate the handle */
-
-	node = acpi_ns_validate_handle(handle);
-	if (!node) {
-		(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
-		return (AE_BAD_PARAMETER);
-	}
-
-	*ret_id = node->owner_id;
-
-	status = acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
-	return (status);
-}
-
-ACPI_EXPORT_SYMBOL(acpi_get_id)
-
-/*******************************************************************************
- *
  * FUNCTION:    acpi_get_type
  *
  * PARAMETERS:  handle          - Handle of object whose type is desired
@@ -107,7 +63,7 @@ ACPI_EXPORT_SYMBOL(acpi_get_id)
  * DESCRIPTION: This routine returns the type associatd with a particular handle
  *
  ******************************************************************************/
-acpi_status acpi_get_type(acpi_handle handle, acpi_object_type * ret_type)
+acpi_status acpi_get_type(acpi_handle handle, acpi_object_type *ret_type)
 {
 	struct acpi_namespace_node *node;
 	acpi_status status;
@@ -118,10 +74,8 @@ acpi_status acpi_get_type(acpi_handle handle, acpi_object_type * ret_type)
 		return (AE_BAD_PARAMETER);
 	}
 
-	/*
-	 * Special case for the predefined Root Node
-	 * (return type ANY)
-	 */
+	/* Special case for the predefined Root Node (return type ANY) */
+
 	if (handle == ACPI_ROOT_OBJECT) {
 		*ret_type = ACPI_TYPE_ANY;
 		return (AE_OK);
@@ -161,7 +115,7 @@ ACPI_EXPORT_SYMBOL(acpi_get_type)
  *              Handle.
  *
  ******************************************************************************/
-acpi_status acpi_get_parent(acpi_handle handle, acpi_handle * ret_handle)
+acpi_status acpi_get_parent(acpi_handle handle, acpi_handle *ret_handle)
 {
 	struct acpi_namespace_node *node;
 	struct acpi_namespace_node *parent_node;
@@ -229,7 +183,7 @@ ACPI_EXPORT_SYMBOL(acpi_get_parent)
 acpi_status
 acpi_get_next_object(acpi_object_type type,
 		     acpi_handle parent,
-		     acpi_handle child, acpi_handle * ret_handle)
+		     acpi_handle child, acpi_handle *ret_handle)
 {
 	acpi_status status;
 	struct acpi_namespace_node *node;

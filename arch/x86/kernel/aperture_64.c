@@ -21,7 +21,7 @@
 #include <linux/pci.h>
 #include <linux/bitops.h>
 #include <linux/suspend.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/io.h>
 #include <asm/iommu.h>
 #include <asm/gart.h>
@@ -227,19 +227,11 @@ static u32 __init search_agp_bridge(u32 *order, int *valid_agp)
 	return 0;
 }
 
-static int gart_fix_e820 __initdata = 1;
+static bool gart_fix_e820 __initdata = true;
 
 static int __init parse_gart_mem(char *p)
 {
-	if (!p)
-		return -EINVAL;
-
-	if (!strncmp(p, "off", 3))
-		gart_fix_e820 = 0;
-	else if (!strncmp(p, "on", 2))
-		gart_fix_e820 = 1;
-
-	return 0;
+	return kstrtobool(p, &gart_fix_e820);
 }
 early_param("gart_fix_e820", parse_gart_mem);
 
@@ -261,6 +253,9 @@ void __init early_gart_iommu_check(void)
 	u32 aper_size = 0, aper_order = 0, last_aper_order = 0;
 	u64 aper_base = 0, last_aper_base = 0;
 	int aper_enabled = 0, last_aper_enabled = 0, last_valid = 0;
+
+	if (!amd_gart_present())
+		return;
 
 	if (!early_pci_allowed())
 		return;
@@ -311,13 +306,13 @@ void __init early_gart_iommu_check(void)
 		fix = 1;
 
 	if (gart_fix_e820 && !fix && aper_enabled) {
-		if (e820_any_mapped(aper_base, aper_base + aper_size,
-				    E820_RAM)) {
+		if (e820__mapped_any(aper_base, aper_base + aper_size,
+				    E820_TYPE_RAM)) {
 			/* reserve it, so we can reuse it in second kernel */
 			pr_info("e820: reserve [mem %#010Lx-%#010Lx] for GART\n",
 				aper_base, aper_base + aper_size - 1);
-			e820_add_region(aper_base, aper_size, E820_RESERVED);
-			update_e820();
+			e820__range_add(aper_base, aper_size, E820_TYPE_RESERVED);
+			e820__update_table_print();
 		}
 	}
 
@@ -354,6 +349,9 @@ int __init gart_iommu_hole_init(void)
 	u64 aper_base, last_aper_base = 0;
 	int fix, slot, valid_agp = 0;
 	int i, node;
+
+	if (!amd_gart_present())
+		return -ENODEV;
 
 	if (gart_iommu_aperture_disabled || !fix_aperture ||
 	    !early_pci_allowed())
@@ -452,7 +450,7 @@ out:
 		   force_iommu ||
 		   valid_agp ||
 		   fallback_aper_force) {
-		pr_info("Your BIOS doesn't leave a aperture memory hole\n");
+		pr_info("Your BIOS doesn't leave an aperture memory hole\n");
 		pr_info("Please enable the IOMMU option in the BIOS setup\n");
 		pr_info("This costs you %dMB of RAM\n",
 			32 << fallback_aper_order);

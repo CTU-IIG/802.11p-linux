@@ -17,7 +17,7 @@
 #include <linux/delay.h>
 #include <linux/types.h>
 #include <linux/io.h>
-#include <asm/mach-loongson1/loongson1.h>
+#include <loongson1.h>
 
 #define LS1X_RTC_REG_OFFSET	(LS1X_RTC_BASE + 0x20)
 #define LS1X_RTC_REGS(x) \
@@ -138,7 +138,7 @@ err:
 	return ret;
 }
 
-static struct rtc_class_ops  ls1x_rtc_ops = {
+static const struct rtc_class_ops  ls1x_rtc_ops = {
 	.read_time	= ls1x_rtc_read_time,
 	.set_time	= ls1x_rtc_set_time,
 };

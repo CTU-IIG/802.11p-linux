@@ -16,6 +16,12 @@
 #include <linux/ata_platform.h>
 #include <linux/libata.h>
 
+#define DRV_NAME "pata_of_platform"
+
+static struct scsi_host_template pata_platform_sht = {
+	ATA_PIO_SHT(DRV_NAME),
+};
+
 static int pata_of_platform_probe(struct platform_device *ofdev)
 {
 	int ret;
@@ -26,7 +32,6 @@ static int pata_of_platform_probe(struct platform_device *ofdev)
 	unsigned int reg_shift = 0;
 	int pio_mode = 0;
 	int pio_mask;
-	const u32 *prop;
 
 	ret = of_address_to_resource(dn, 0, &io_res);
 	if (ret) {
@@ -44,13 +49,9 @@ static int pata_of_platform_probe(struct platform_device *ofdev)
 
 	irq_res = platform_get_resource(ofdev, IORESOURCE_IRQ, 0);
 
-	prop = of_get_property(dn, "reg-shift", NULL);
-	if (prop)
-		reg_shift = be32_to_cpup(prop);
+	of_property_read_u32(dn, "reg-shift", &reg_shift);
 
-	prop = of_get_property(dn, "pio-mode", NULL);
-	if (prop) {
-		pio_mode = be32_to_cpup(prop);
+	if (!of_property_read_u32(dn, "pio-mode", &pio_mode)) {
 		if (pio_mode > 6) {
 			dev_err(&ofdev->dev, "invalid pio-mode\n");
 			return -EINVAL;
@@ -63,10 +64,10 @@ static int pata_of_platform_probe(struct platform_device *ofdev)
 	pio_mask |= (1 << pio_mode) - 1;
 
 	return __pata_platform_probe(&ofdev->dev, &io_res, &ctl_res, irq_res,
-				     reg_shift, pio_mask);
+				     reg_shift, pio_mask, &pata_platform_sht);
 }
 
-static struct of_device_id pata_of_platform_match[] = {
+static const struct of_device_id pata_of_platform_match[] = {
 	{ .compatible = "ata-generic", },
 	{ },
 };
@@ -74,7 +75,7 @@ MODULE_DEVICE_TABLE(of, pata_of_platform_match);
 
 static struct platform_driver pata_of_platform_driver = {
 	.driver = {
-		.name = "pata_of_platform",
+		.name = DRV_NAME,
 		.of_match_table = pata_of_platform_match,
 	},
 	.probe		= pata_of_platform_probe,

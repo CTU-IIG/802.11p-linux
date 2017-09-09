@@ -184,6 +184,7 @@ PPSMC_Result ci_send_msg_to_smc(struct radeon_device *rdev, PPSMC_Msg msg)
 	return (PPSMC_Result)tmp;
 }
 
+#if 0
 PPSMC_Result ci_wait_for_smc_inactive(struct radeon_device *rdev)
 {
 	u32 tmp;
@@ -193,14 +194,15 @@ PPSMC_Result ci_wait_for_smc_inactive(struct radeon_device *rdev)
 		return PPSMC_Result_OK;
 
 	for (i = 0; i < rdev->usec_timeout; i++) {
-                tmp = RREG32_SMC(SMC_SYSCON_CLOCK_CNTL_0);
-                if ((tmp & CKEN) == 0)
+		tmp = RREG32_SMC(SMC_SYSCON_CLOCK_CNTL_0);
+		if ((tmp & CKEN) == 0)
 			break;
-                udelay(1);
-        }
+		udelay(1);
+	}
 
 	return PPSMC_Result_OK;
 }
+#endif
 
 int ci_load_smc_ucode(struct radeon_device *rdev, u32 limit)
 {

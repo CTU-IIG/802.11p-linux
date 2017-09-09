@@ -20,6 +20,7 @@
 #include <linux/mutex.h>
 /* for request_sense */
 #include <linux/cdrom.h>
+#include <scsi/scsi_cmnd.h>
 #include <asm/byteorder.h>
 #include <asm/io.h>
 
@@ -39,7 +40,55 @@
 
 struct device;
 
-/* Error codes returned in rq->errors to the higher part of the driver. */
+/* values for ide_request.type */
+enum ata_priv_type {
+	ATA_PRIV_MISC,
+	ATA_PRIV_TASKFILE,
+	ATA_PRIV_PC,
+	ATA_PRIV_SENSE,		/* sense request */
+	ATA_PRIV_PM_SUSPEND,	/* suspend request */
+	ATA_PRIV_PM_RESUME,	/* resume request */
+};
+
+struct ide_request {
+	struct scsi_request sreq;
+	u8 sense[SCSI_SENSE_BUFFERSIZE];
+	u8 type;
+};
+
+static inline struct ide_request *ide_req(struct request *rq)
+{
+	return blk_mq_rq_to_pdu(rq);
+}
+
+static inline bool ata_misc_request(struct request *rq)
+{
+	return blk_rq_is_private(rq) && ide_req(rq)->type == ATA_PRIV_MISC;
+}
+
+static inline bool ata_taskfile_request(struct request *rq)
+{
+	return blk_rq_is_private(rq) && ide_req(rq)->type == ATA_PRIV_TASKFILE;
+}
+
+static inline bool ata_pc_request(struct request *rq)
+{
+	return blk_rq_is_private(rq) && ide_req(rq)->type == ATA_PRIV_PC;
+}
+
+static inline bool ata_sense_request(struct request *rq)
+{
+	return blk_rq_is_private(rq) && ide_req(rq)->type == ATA_PRIV_SENSE;
+}
+
+static inline bool ata_pm_request(struct request *rq)
+{
+	return blk_rq_is_private(rq) &&
+		(ide_req(rq)->type == ATA_PRIV_PM_SUSPEND ||
+		 ide_req(rq)->type == ATA_PRIV_PM_RESUME);
+}
+
+/* Error codes returned in result to the higher part of the driver. */
 enum {
 	IDE_DRV_ERROR_GENERAL	= 101,
 	IDE_DRV_ERROR_FILEMARK	= 102,
@@ -566,7 +615,7 @@ struct ide_drive_s {
 
 	/* current sense rq and buffer */
 	bool sense_rq_armed;
-	struct request sense_rq;
+	struct request *sense_rq;
 	struct request_sense sense_data;
 };
 
@@ -1314,6 +1363,19 @@ struct ide_port_info {
 	u8			udma_mask;
 };
 
+/*
+ * State information carried for REQ_TYPE_ATA_PM_SUSPEND and REQ_TYPE_ATA_PM_RESUME
+ * requests.
+ */
+struct ide_pm_state {
+	/* PM state machine step value, currently driver specific */
+	int	pm_step;
+	/* requested PM state value (S1, S2, S3, S4, ...) */
+	u32	pm_state;
+	void*	data;		/* for driver use */
+};
+
+
 int ide_pci_init_one(struct pci_dev *, const struct ide_port_info *, void *);
 int ide_pci_init_two(struct pci_dev *, struct pci_dev *,
 		     const struct ide_port_info *, void *);
@@ -1550,5 +1612,6 @@ static inline void ide_set_drivedata(ide_drive_t *drive, void *data)
 
 #define ide_host_for_each_port(i, port, host) \
 	for ((i) = 0; ((port) = (host)->ports[i]) || (i) < MAX_HOST_PORTS; (i)++)
+
 
 #endif /* _IDE_H */

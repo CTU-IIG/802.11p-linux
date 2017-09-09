@@ -2396,8 +2396,6 @@ int scsi_esp_register(struct esp *esp, struct device *dev)
 
 	if (!esp->num_tags)
 		esp->num_tags = ESP_DEFAULT_TAGS;
-	else if (esp->num_tags >= ESP_MAX_TAG)
-		esp->num_tags = ESP_MAX_TAG - 1;
 	esp->host->transportt = esp_transport_template;
 	esp->host->max_lun = ESP_MAX_LUN;
 	esp->host->cmd_per_lun = 2;
@@ -2696,7 +2694,6 @@ struct scsi_host_template scsi_esp_template = {
 	.use_clustering		= ENABLE_CLUSTERING,
 	.max_sectors		= 0xffff,
 	.skip_settle_delay	= 1,
-	.use_blk_tags		= 1,
 };
 EXPORT_SYMBOL(scsi_esp_template);
 

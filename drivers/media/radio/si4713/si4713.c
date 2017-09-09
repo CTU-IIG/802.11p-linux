@@ -15,10 +15,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/completion.h>
@@ -383,7 +379,7 @@ static int si4713_powerup(struct si4713_device *sdev)
 		}
 	}
 
-	if (!IS_ERR(sdev->gpio_reset)) {
+	if (sdev->gpio_reset) {
 		udelay(50);
 		gpiod_set_value(sdev->gpio_reset, 1);
 	}
@@ -407,8 +403,7 @@ static int si4713_powerup(struct si4713_device *sdev)
 						SI4713_STC_INT | SI4713_CTS);
 		return err;
 	}
-	if (!IS_ERR(sdev->gpio_reset))
-		gpiod_set_value(sdev->gpio_reset, 0);
+	gpiod_set_value(sdev->gpio_reset, 0);
 
 
 	if (sdev->vdd) {
@@ -447,7 +442,7 @@ static int si4713_powerdown(struct si4713_device *sdev)
 		v4l2_dbg(1, debug, &sdev->sd, "Power down response: 0x%02x\n",
 				resp[0]);
 		v4l2_dbg(1, debug, &sdev->sd, "Device in reset mode\n");
-		if (!IS_ERR(sdev->gpio_reset))
+		if (sdev->gpio_reset)
 			gpiod_set_value(sdev->gpio_reset, 0);
 
 		if (sdev->vdd) {
@@ -717,9 +712,9 @@ static int si4713_tx_tune_status(struct si4713_device *sdev, u8 intack,
 		*power = val[5];
 		*antcap = val[6];
 		*noise = val[7];
-		v4l2_dbg(1, debug, &sdev->sd, "%s: response: %d x 10 kHz "
-				"(power %d, antcap %d, rnl %d)\n", __func__,
-				*frequency, *power, *antcap, *noise);
+		v4l2_dbg(1, debug, &sdev->sd,
+			 "%s: response: %d x 10 kHz (power %d, antcap %d, rnl %d)\n",
+			 __func__, *frequency, *power, *antcap, *noise);
 	}
 
 	return err;
@@ -759,10 +754,9 @@ static int si4713_tx_rds_buff(struct si4713_device *sdev, u8 mode, u16 rdsb,
 		v4l2_dbg(1, debug, &sdev->sd,
 			"%s: status=0x%02x\n", __func__, val[0]);
 		*cbleft = (s8)val[2] - val[3];
-		v4l2_dbg(1, debug, &sdev->sd, "%s: response: interrupts"
-				" 0x%02x cb avail: %d cb used %d fifo avail"
-				" %d fifo used %d\n", __func__, val[1],
-				val[2], val[3], val[4], val[5]);
+		v4l2_dbg(1, debug, &sdev->sd,
+			 "%s: response: interrupts 0x%02x cb avail: %d cb used %d fifo avail %d fifo used %d\n",
+			 __func__, val[1], val[2], val[3], val[4], val[5]);
 	}
 
 	return err;
@@ -1460,14 +1454,9 @@ static int si4713_probe(struct i2c_client *client,
 		goto exit;
 	}
 
-	sdev->gpio_reset = devm_gpiod_get(&client->dev, "reset");
-	if (!IS_ERR(sdev->gpio_reset)) {
-		gpiod_direction_output(sdev->gpio_reset, 0);
-	} else if (PTR_ERR(sdev->gpio_reset) == -ENOENT) {
-		dev_dbg(&client->dev, "No reset GPIO assigned\n");
-	} else if (PTR_ERR(sdev->gpio_reset) == -ENOSYS) {
-		dev_dbg(&client->dev, "No reset GPIO support\n");
-	} else {
+	sdev->gpio_reset = devm_gpiod_get_optional(&client->dev, "reset",
+						   GPIOD_OUT_LOW);
+	if (IS_ERR(sdev->gpio_reset)) {
 		rval = PTR_ERR(sdev->gpio_reset);
 		dev_err(&client->dev, "Failed to request gpio: %d\n", rval);
 		goto exit;
@@ -1615,8 +1604,10 @@ static int si4713_probe(struct i2c_client *client,
 		return 0;
 
 	si4713_pdev = platform_device_alloc("radio-si4713", -1);
-	if (!si4713_pdev)
+	if (!si4713_pdev) {
+		rval = -ENOMEM;
 		goto put_main_pdev;
+	}
 
 	si4713_pdev_pdata.subdev = client;
 	rval = platform_device_add_data(si4713_pdev, &si4713_pdev_pdata,

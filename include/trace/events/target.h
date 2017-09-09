@@ -6,7 +6,7 @@
 
 #include <linux/tracepoint.h>
 #include <linux/trace_seq.h>
-#include <scsi/scsi.h>
+#include <scsi/scsi_proto.h>
 #include <scsi/scsi_tcq.h>
 #include <target/target_core_base.h>
 
@@ -109,10 +109,10 @@
 
 #define show_task_attribute_name(val)				\
 	__print_symbolic(val,					\
-		{ MSG_SIMPLE_TAG,	"SIMPLE"	},	\
-		{ MSG_HEAD_TAG,		"HEAD"		},	\
-		{ MSG_ORDERED_TAG,	"ORDERED"	},	\
-		{ MSG_ACA_TAG,		"ACA"		} )
+		{ TCM_SIMPLE_TAG,	"SIMPLE"	},	\
+		{ TCM_HEAD_TAG,		"HEAD"		},	\
+		{ TCM_ORDERED_TAG,	"ORDERED"	},	\
+		{ TCM_ACA_TAG,		"ACA"		} )
 
 #define show_scsi_status_name(val)				\
 	__print_symbolic(val,					\

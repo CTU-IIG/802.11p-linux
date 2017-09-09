@@ -13,11 +13,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
- *
  * Special thanks to:
  *   Sami R. <maesesami@gmail.com> for lot of help in debugging and therefore
  *    bringing to life support for transmission & learning mode.
@@ -904,7 +899,7 @@ static int ene_set_tx_carrier(struct rc_dev *rdev, u32 carrier)
 
 		dbg("TX: out of range %d-%d kHz carrier",
 			2000 / ENE_CIRMOD_PRD_MIN, 2000 / ENE_CIRMOD_PRD_MAX);
-		return -1;
+		return -EINVAL;
 	}
 
 	dev->tx_period = period;
@@ -1012,7 +1007,7 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 
 	/* allocate memory */
 	dev = kzalloc(sizeof(struct ene_device), GFP_KERNEL);
-	rdev = rc_allocate_device();
+	rdev = rc_allocate_device(RC_DRIVER_IR_RAW);
 	if (!dev || !rdev)
 		goto exit_free_dev_rdev;
 
@@ -1058,8 +1053,7 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 	if (!dev->hw_learning_and_tx_capable)
 		learning_mode_force = false;
 
-	rdev->driver_type = RC_DRIVER_IR_RAW;
-	rdev->allowed_protocols = RC_BIT_ALL;
+	rdev->allowed_protocols = RC_BIT_ALL_IR_DECODER;
 	rdev->priv = dev;
 	rdev->open = ene_open;
 	rdev->close = ene_close;
@@ -1195,16 +1189,6 @@ static struct pnp_driver ene_driver = {
 	.shutdown = ene_shutdown,
 };
 
-static int __init ene_init(void)
-{
-	return pnp_register_driver(&ene_driver);
-}
-
-static void ene_exit(void)
-{
-	pnp_unregister_driver(&ene_driver);
-}
-
 module_param(sample_period, int, S_IRUGO);
 MODULE_PARM_DESC(sample_period, "Hardware sample period (50 us default)");
 
@@ -1220,11 +1204,9 @@ MODULE_PARM_DESC(txsim,
 
 MODULE_DEVICE_TABLE(pnp, ene_ids);
 MODULE_DESCRIPTION
-	("Infrared input driver for KB3926B/C/D/E/F "
-	"(aka ENE0100/ENE0200/ENE0201/ENE0202) CIR port");
+	("Infrared input driver for KB3926B/C/D/E/F (aka ENE0100/ENE0200/ENE0201/ENE0202) CIR port");
 
 MODULE_AUTHOR("Maxim Levitsky");
 MODULE_LICENSE("GPL");
 
-module_init(ene_init);
-module_exit(ene_exit);
+module_pnp_driver(ene_driver);

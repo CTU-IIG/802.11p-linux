@@ -69,11 +69,7 @@
 #include <net/ip.h>
 #include <net/tcp.h>
 #include <asm/byteorder.h>
-#include <asm/io.h>
 #include <asm/processor.h>
-#ifdef CONFIG_MTRR
-#include <asm/mtrr.h>
-#endif
 #include <net/busy_poll.h>
 
 #include "myri10ge_mcp.h"
@@ -195,21 +191,6 @@ struct myri10ge_slice_state {
 	int cpu;
 	__be32 __iomem *dca_tag;
 #endif
-#ifdef CONFIG_NET_RX_BUSY_POLL
-	unsigned int state;
-#define SLICE_STATE_IDLE	0
-#define SLICE_STATE_NAPI	1	/* NAPI owns this slice */
-#define SLICE_STATE_POLL	2	/* poll owns this slice */
-#define SLICE_LOCKED (SLICE_STATE_NAPI | SLICE_STATE_POLL)
-#define SLICE_STATE_NAPI_YIELD	4	/* NAPI yielded this slice */
-#define SLICE_STATE_POLL_YIELD	8	/* poll yielded this slice */
-#define SLICE_USER_PEND (SLICE_STATE_POLL | SLICE_STATE_POLL_YIELD)
-	spinlock_t lock;
-	unsigned long lock_napi_yield;
-	unsigned long lock_poll_yield;
-	unsigned long busy_poll_miss;
-	unsigned long busy_poll_cnt;
-#endif /* CONFIG_NET_RX_BUSY_POLL */
 	char irq_desc[32];
 };
 
@@ -242,8 +223,7 @@ struct myri10ge_priv {
 	unsigned int rdma_tags_available;
 	int intr_coal_delay;
 	__be32 __iomem *intr_coal_delay_ptr;
-	int mtrr;
-	int wc_enabled;
+	int wc_cookie;
 	int down_cnt;
 	wait_queue_head_t down_wq;
 	struct work_struct watchdog_work;
@@ -284,7 +264,7 @@ MODULE_FIRMWARE("myri10ge_eth_z8e.dat");
 MODULE_FIRMWARE("myri10ge_rss_ethp_z8e.dat");
 MODULE_FIRMWARE("myri10ge_rss_eth_z8e.dat");
 
-/* Careful: must be accessed under kparam_block_sysfs_write */
+/* Careful: must be accessed under kernel_param_lock() */
 static char *myri10ge_fw_name = NULL;
 module_param(myri10ge_fw_name, charp, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(myri10ge_fw_name, "Firmware image name");
@@ -294,7 +274,7 @@ static char *myri10ge_fw_names[MYRI10GE_MAX_BOARDS] =
     {[0 ... (MYRI10GE_MAX_BOARDS - 1)] = NULL };
 module_param_array_named(myri10ge_fw_names, myri10ge_fw_names, charp, NULL,
 			 0444);
-MODULE_PARM_DESC(myri10ge_fw_name, "Firmware image names per board");
+MODULE_PARM_DESC(myri10ge_fw_names, "Firmware image names per board");
 
 static int myri10ge_ecrc_enable = 1;
 module_param(myri10ge_ecrc_enable, int, S_IRUGO);
@@ -383,8 +363,8 @@ static inline void put_be32(__be32 val, __be32 __iomem * p)
 	__raw_writel((__force __u32) val, (__force void __iomem *)p);
 }
 
-static struct rtnl_link_stats64 *myri10ge_get_stats(struct net_device *dev,
-						    struct rtnl_link_stats64 *stats);
+static void myri10ge_get_stats(struct net_device *dev,
+			       struct rtnl_link_stats64 *stats);
 
 static void set_fw_name(struct myri10ge_priv *mgp, char *name, bool allocated)
 {
@@ -930,92 +910,6 @@ abort:
 	return status;
 }
 
-#ifdef CONFIG_NET_RX_BUSY_POLL
-static inline void myri10ge_ss_init_lock(struct myri10ge_slice_state *ss)
-{
-	spin_lock_init(&ss->lock);
-	ss->state = SLICE_STATE_IDLE;
-}
-
-static inline bool myri10ge_ss_lock_napi(struct myri10ge_slice_state *ss)
-{
-	bool rc = true;
-	spin_lock(&ss->lock);
-	if ((ss->state & SLICE_LOCKED)) {
-		WARN_ON((ss->state & SLICE_STATE_NAPI));
-		ss->state |= SLICE_STATE_NAPI_YIELD;
-		rc = false;
-		ss->lock_napi_yield++;
-	} else
-		ss->state = SLICE_STATE_NAPI;
-	spin_unlock(&ss->lock);
-	return rc;
-}
-
-static inline void myri10ge_ss_unlock_napi(struct myri10ge_slice_state *ss)
-{
-	spin_lock(&ss->lock);
-	WARN_ON((ss->state & (SLICE_STATE_POLL | SLICE_STATE_NAPI_YIELD)));
-	ss->state = SLICE_STATE_IDLE;
-	spin_unlock(&ss->lock);
-}
-
-static inline bool myri10ge_ss_lock_poll(struct myri10ge_slice_state *ss)
-{
-	bool rc = true;
-	spin_lock_bh(&ss->lock);
-	if ((ss->state & SLICE_LOCKED)) {
-		ss->state |= SLICE_STATE_POLL_YIELD;
-		rc = false;
-		ss->lock_poll_yield++;
-	} else
-		ss->state |= SLICE_STATE_POLL;
-	spin_unlock_bh(&ss->lock);
-	return rc;
-}
-
-static inline void myri10ge_ss_unlock_poll(struct myri10ge_slice_state *ss)
-{
-	spin_lock_bh(&ss->lock);
-	WARN_ON((ss->state & SLICE_STATE_NAPI));
-	ss->state = SLICE_STATE_IDLE;
-	spin_unlock_bh(&ss->lock);
-}
-
-static inline bool myri10ge_ss_busy_polling(struct myri10ge_slice_state *ss)
-{
-	WARN_ON(!(ss->state & SLICE_LOCKED));
-	return (ss->state & SLICE_USER_PEND);
-}
-#else /* CONFIG_NET_RX_BUSY_POLL */
-static inline void myri10ge_ss_init_lock(struct myri10ge_slice_state *ss)
-{
-}
-
-static inline bool myri10ge_ss_lock_napi(struct myri10ge_slice_state *ss)
-{
-	return false;
-}
-
-static inline void myri10ge_ss_unlock_napi(struct myri10ge_slice_state *ss)
-{
-}
-
-static inline bool myri10ge_ss_lock_poll(struct myri10ge_slice_state *ss)
-{
-	return false;
-}
-
-static inline void myri10ge_ss_unlock_poll(struct myri10ge_slice_state *ss)
-{
-}
-
-static inline bool myri10ge_ss_busy_polling(struct myri10ge_slice_state *ss)
-{
-	return false;
-}
-#endif
-
 static int myri10ge_reset(struct myri10ge_priv *mgp)
 {
 	struct myri10ge_cmd cmd;
@@ -1431,7 +1325,6 @@ myri10ge_rx_done(struct myri10ge_slice_state *ss, int len, __wsum csum)
 	struct pci_dev *pdev = mgp->pdev;
 	struct net_device *dev = mgp->dev;
 	u8 *va;
-	bool polling;
 
 	if (len <= mgp->small_bytes) {
 		rx = &ss->rx_small;
@@ -1446,15 +1339,7 @@ myri10ge_rx_done(struct myri10ge_slice_state *ss, int len, __wsum csum)
 	va = page_address(rx->info[idx].page) + rx->info[idx].page_offset;
 	prefetch(va);
 
-	/* When busy polling in user context, allocate skb and copy headers to
-	 * skb's linear memory ourselves.  When not busy polling, use the napi
-	 * gro api.
-	 */
-	polling = myri10ge_ss_busy_polling(ss);
-	if (polling)
-		skb = netdev_alloc_skb(dev, MYRI10GE_HLEN + 16);
-	else
-		skb = napi_get_frags(&ss->napi);
+	skb = napi_get_frags(&ss->napi);
 	if (unlikely(skb == NULL)) {
 		ss->stats.rx_dropped++;
 		for (i = 0, remainder = len; remainder > 0; i++) {
@@ -1493,28 +1378,8 @@ myri10ge_rx_done(struct myri10ge_slice_state *ss, int len, __wsum csum)
 	}
 	myri10ge_vlan_rx(mgp->dev, va, skb);
 	skb_record_rx_queue(skb, ss - &mgp->ss[0]);
-	skb_mark_napi_id(skb, &ss->napi);
 
-	if (polling) {
-		int hlen;
-
-		/* myri10ge_vlan_rx might have moved the header, so compute
-		 * length and address again.
-		 */
-		hlen = MYRI10GE_HLEN > skb->len ? skb->len : MYRI10GE_HLEN;
-		va = page_address(skb_frag_page(&rx_frags[0])) +
-			rx_frags[0].page_offset;
-		/* Copy header into the skb linear memory */
-		skb_copy_to_linear_data(skb, va, hlen);
-		rx_frags[0].page_offset += hlen;
-		rx_frags[0].size -= hlen;
-		skb->data_len -= hlen;
-		skb->tail += hlen;
-		skb->protocol = eth_type_trans(skb, dev);
-		netif_receive_skb(skb);
-	}
-	else
-		napi_gro_frags(&ss->napi);
+	napi_gro_frags(&ss->napi);
 
 	return 1;
 }
@@ -1674,48 +1539,15 @@ static int myri10ge_poll(struct napi_struct *napi, int budget)
 	if (ss->mgp->dca_enabled)
 		myri10ge_update_dca(ss);
 #endif
-	/* Try later if the busy_poll handler is running. */
-	if (!myri10ge_ss_lock_napi(ss))
-		return budget;
-
 	/* process as many rx events as NAPI will allow */
 	work_done = myri10ge_clean_rx_done(ss, budget);
 
-	myri10ge_ss_unlock_napi(ss);
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		put_be32(htonl(3), ss->irq_claim);
 	}
 	return work_done;
 }
-
-#ifdef CONFIG_NET_RX_BUSY_POLL
-static int myri10ge_busy_poll(struct napi_struct *napi)
-{
-	struct myri10ge_slice_state *ss =
-	    container_of(napi, struct myri10ge_slice_state, napi);
-	struct myri10ge_priv *mgp = ss->mgp;
-	int work_done;
-
-	/* Poll only when the link is up */
-	if (mgp->link_state != MXGEFW_LINK_UP)
-		return LL_FLUSH_FAILED;
-
-	if (!myri10ge_ss_lock_poll(ss))
-		return LL_FLUSH_BUSY;
-
-	/* Process a small number of packets */
-	work_done = myri10ge_clean_rx_done(ss, 4);
-	if (work_done)
-		ss->busy_poll_cnt += work_done;
-	else
-		ss->busy_poll_miss++;
-
-	myri10ge_ss_unlock_poll(ss);
-
-	return work_done;
-}
-#endif /* CONFIG_NET_RX_BUSY_POLL */
 
 static irqreturn_t myri10ge_intr(int irq, void *arg)
 {
@@ -1778,15 +1610,16 @@ static irqreturn_t myri10ge_intr(int irq, void *arg)
 }
 
 static int
-myri10ge_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+myri10ge_get_link_ksettings(struct net_device *netdev,
+			    struct ethtool_link_ksettings *cmd)
 {
 	struct myri10ge_priv *mgp = netdev_priv(netdev);
 	char *ptr;
 	int i;
 
-	cmd->autoneg = AUTONEG_DISABLE;
-	ethtool_cmd_speed_set(cmd, SPEED_10000);
-	cmd->duplex = DUPLEX_FULL;
+	cmd->base.autoneg = AUTONEG_DISABLE;
+	cmd->base.speed = SPEED_10000;
+	cmd->base.duplex = DUPLEX_FULL;
 
 	/*
 	 * parse the product code to deterimine the interface type
@@ -1811,16 +1644,12 @@ myri10ge_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
 		ptr++;
 	if (*ptr == 'R' || *ptr == 'Q' || *ptr == 'S') {
 		/* We've found either an XFP, quad ribbon fiber, or SFP+ */
-		cmd->port = PORT_FIBRE;
-		cmd->supported |= SUPPORTED_FIBRE;
-		cmd->advertising |= ADVERTISED_FIBRE;
+		cmd->base.port = PORT_FIBRE;
+		ethtool_link_ksettings_add_link_mode(cmd, supported, FIBRE);
+		ethtool_link_ksettings_add_link_mode(cmd, advertising, FIBRE);
 	} else {
-		cmd->port = PORT_OTHER;
+		cmd->base.port = PORT_OTHER;
 	}
-	if (*ptr == 'R' || *ptr == 'S')
-		cmd->transceiver = XCVR_EXTERNAL;
-	else
-		cmd->transceiver = XCVR_INTERNAL;
 
 	return 0;
 }
@@ -1905,7 +1734,7 @@ static const char myri10ge_gstrings_main_stats[][ETH_GSTRING_LEN] = {
 	"tx_aborted_errors", "tx_carrier_errors", "tx_fifo_errors",
 	"tx_heartbeat_errors", "tx_window_errors",
 	/* device-specific stats */
-	"tx_boundary", "WC", "irq", "MSI", "MSIX",
+	"tx_boundary", "irq", "MSI", "MSIX",
 	"read_dma_bw_MBs", "write_dma_bw_MBs", "read_write_dma_bw_MBs",
 	"serial_number", "watchdog_resets",
 #ifdef CONFIG_MYRI10GE_DCA
@@ -1924,10 +1753,6 @@ static const char myri10ge_gstrings_slice_stats[][ETH_GSTRING_LEN] = {
 	"tx_pkt_start", "tx_pkt_done", "tx_req", "tx_done",
 	"rx_small_cnt", "rx_big_cnt",
 	"wake_queue", "stop_queue", "tx_linearized",
-#ifdef CONFIG_NET_RX_BUSY_POLL
-	"rx_lock_napi_yield", "rx_lock_poll_yield", "rx_busy_poll_miss",
-	"rx_busy_poll_cnt",
-#endif
 };
 
 #define MYRI10GE_NET_STATS_LEN      21
@@ -1984,7 +1809,6 @@ myri10ge_get_ethtool_stats(struct net_device *netdev,
 		data[i] = ((u64 *)&link_stats)[i];
 
 	data[i++] = (unsigned int)mgp->tx_boundary;
-	data[i++] = (unsigned int)mgp->wc_enabled;
 	data[i++] = (unsigned int)mgp->pdev->irq;
 	data[i++] = (unsigned int)mgp->msi_enabled;
 	data[i++] = (unsigned int)mgp->msix_enabled;
@@ -2028,12 +1852,6 @@ myri10ge_get_ethtool_stats(struct net_device *netdev,
 		data[i++] = (unsigned int)ss->tx.wake_queue;
 		data[i++] = (unsigned int)ss->tx.stop_queue;
 		data[i++] = (unsigned int)ss->tx.linearized;
-#ifdef CONFIG_NET_RX_BUSY_POLL
-		data[i++] = ss->lock_napi_yield;
-		data[i++] = ss->lock_poll_yield;
-		data[i++] = ss->busy_poll_miss;
-		data[i++] = ss->busy_poll_cnt;
-#endif
 	}
 }
 
@@ -2104,7 +1922,6 @@ myri10ge_phys_id(struct net_device *netdev, enum ethtool_phys_id_state state)
 }
 
 static const struct ethtool_ops myri10ge_ethtool_ops = {
-	.get_settings = myri10ge_get_settings,
 	.get_drvinfo = myri10ge_get_drvinfo,
 	.get_coalesce = myri10ge_get_coalesce,
 	.set_coalesce = myri10ge_set_coalesce,
@@ -2118,6 +1935,7 @@ static const struct ethtool_ops myri10ge_ethtool_ops = {
 	.set_msglevel = myri10ge_set_msglevel,
 	.get_msglevel = myri10ge_get_msglevel,
 	.set_phys_id = myri10ge_phys_id,
+	.get_link_ksettings = myri10ge_get_link_ksettings,
 };
 
 static int myri10ge_allocate_rings(struct myri10ge_slice_state *ss)
@@ -2595,9 +2413,6 @@ static int myri10ge_open(struct net_device *dev)
 			goto abort_with_rings;
 		}
 
-		/* Initialize the slice spinlock and state used for polling */
-		myri10ge_ss_init_lock(ss);
-
 		/* must happen prior to any irq */
 		napi_enable(&(ss)->napi);
 	}
@@ -2674,19 +2489,9 @@ static int myri10ge_close(struct net_device *dev)
 
 	del_timer_sync(&mgp->watchdog_timer);
 	mgp->running = MYRI10GE_ETH_STOPPING;
-	local_bh_disable(); /* myri10ge_ss_lock_napi needs bh disabled */
-	for (i = 0; i < mgp->num_slices; i++) {
+	for (i = 0; i < mgp->num_slices; i++)
 		napi_disable(&mgp->ss[i].napi);
-		/* Lock the slice to prevent the busy_poll handler from
-		 * accessing it.  Later when we bring the NIC up, myri10ge_open
-		 * resets the slice including this lock.
-		 */
-		while (!myri10ge_ss_lock_napi(&mgp->ss[i])) {
-			pr_info("Slice %d locked\n", i);
-			mdelay(1);
-		}
-	}
-	local_bh_enable();
+
 	netif_carrier_off(dev);
 
 	netif_tx_stop_all_queues(dev);
@@ -3125,8 +2930,8 @@ drop:
 	return NETDEV_TX_OK;
 }
 
-static struct rtnl_link_stats64 *myri10ge_get_stats(struct net_device *dev,
-						    struct rtnl_link_stats64 *stats)
+static void myri10ge_get_stats(struct net_device *dev,
+			       struct rtnl_link_stats64 *stats)
 {
 	const struct myri10ge_priv *mgp = netdev_priv(dev);
 	const struct myri10ge_slice_netstats *slice_stats;
@@ -3141,7 +2946,6 @@ static struct rtnl_link_stats64 *myri10ge_get_stats(struct net_device *dev,
 		stats->rx_dropped += slice_stats->rx_dropped;
 		stats->tx_dropped += slice_stats->tx_dropped;
 	}
-	return stats;
 }
 
 static void myri10ge_set_multicast_list(struct net_device *dev)
@@ -3238,10 +3042,6 @@ static int myri10ge_change_mtu(struct net_device *dev, int new_mtu)
 	struct myri10ge_priv *mgp = netdev_priv(dev);
 	int error = 0;
 
-	if ((new_mtu < 68) || (ETH_HLEN + new_mtu > MYRI10GE_MAX_ETHER_MTU)) {
-		netdev_err(dev, "new mtu (%d) is not valid\n", new_mtu);
-		return -EINVAL;
-	}
 	netdev_info(dev, "changing mtu from %d to %d\n", dev->mtu, new_mtu);
 	if (mgp->running) {
 		/* if we change the mtu on an active device, we must
@@ -3433,7 +3233,7 @@ static void myri10ge_select_firmware(struct myri10ge_priv *mgp)
 		}
 	}
 
-	kparam_block_sysfs_write(myri10ge_fw_name);
+	kernel_param_lock(THIS_MODULE);
 	if (myri10ge_fw_name != NULL) {
 		char *fw_name = kstrdup(myri10ge_fw_name, GFP_KERNEL);
 		if (fw_name) {
@@ -3441,7 +3241,7 @@ static void myri10ge_select_firmware(struct myri10ge_priv *mgp)
 			set_fw_name(mgp, fw_name, true);
 		}
 	}
-	kparam_unblock_sysfs_write(myri10ge_fw_name);
+	kernel_param_unlock(THIS_MODULE);
 
 	if (mgp->board_number < MYRI10GE_MAX_BOARDS &&
 	    myri10ge_fw_names[mgp->board_number] != NULL &&
@@ -3820,7 +3620,6 @@ static int myri10ge_alloc_slices(struct myri10ge_priv *mgp)
 		ss->dev = mgp->dev;
 		netif_napi_add(ss->dev, &ss->napi, myri10ge_poll,
 			       myri10ge_napi_weight);
-		napi_hash_add(&ss->napi);
 	}
 	return 0;
 abort:
@@ -3965,9 +3764,6 @@ static const struct net_device_ops myri10ge_netdev_ops = {
 	.ndo_change_mtu		= myri10ge_change_mtu,
 	.ndo_set_rx_mode	= myri10ge_set_multicast_list,
 	.ndo_set_mac_address	= myri10ge_set_mac_address,
-#ifdef CONFIG_NET_RX_BUSY_POLL
-	.ndo_busy_poll		= myri10ge_busy_poll,
-#endif
 };
 
 static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -4033,19 +3829,14 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	(void)pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
 	mgp->cmd = dma_alloc_coherent(&pdev->dev, sizeof(*mgp->cmd),
 				      &mgp->cmd_bus, GFP_KERNEL);
-	if (mgp->cmd == NULL)
+	if (!mgp->cmd) {
+		status = -ENOMEM;
 		goto abort_with_enabled;
+	}
 
 	mgp->board_span = pci_resource_len(pdev, 0);
 	mgp->iomem_base = pci_resource_start(pdev, 0);
-	mgp->mtrr = -1;
-	mgp->wc_enabled = 0;
-#ifdef CONFIG_MTRR
-	mgp->mtrr = mtrr_add(mgp->iomem_base, mgp->board_span,
-			     MTRR_TYPE_WRCOMB, 1);
-	if (mgp->mtrr >= 0)
-		mgp->wc_enabled = 1;
-#endif
+	mgp->wc_cookie = arch_phys_wc_add(mgp->iomem_base, mgp->board_span);
 	mgp->sram = ioremap_wc(mgp->iomem_base, mgp->board_span);
 	if (mgp->sram == NULL) {
 		dev_err(&pdev->dev, "ioremap failed for %ld bytes at 0x%lx\n",
@@ -4098,13 +3889,19 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	myri10ge_setup_dca(mgp);
 #endif
 	pci_set_drvdata(pdev, mgp);
-	if ((myri10ge_initial_mtu + ETH_HLEN) > MYRI10GE_MAX_ETHER_MTU)
-		myri10ge_initial_mtu = MYRI10GE_MAX_ETHER_MTU - ETH_HLEN;
-	if ((myri10ge_initial_mtu + ETH_HLEN) < 68)
-		myri10ge_initial_mtu = 68;
+
+	/* MTU range: 68 - 9000 */
+	netdev->min_mtu = ETH_MIN_MTU;
+	netdev->max_mtu = MYRI10GE_MAX_ETHER_MTU - ETH_HLEN;
+
+	if (myri10ge_initial_mtu > netdev->max_mtu)
+		myri10ge_initial_mtu = netdev->max_mtu;
+	if (myri10ge_initial_mtu < netdev->min_mtu)
+		myri10ge_initial_mtu = netdev->min_mtu;
+
+	netdev->mtu = myri10ge_initial_mtu;
 
 	netdev->netdev_ops = &myri10ge_netdev_ops;
-	netdev->mtu = myri10ge_initial_mtu;
 	netdev->hw_features = mgp->features | NETIF_F_RXCSUM;
 
 	/* fake NETIF_F_HW_VLAN_CTAG_RX for good GRO performance */
@@ -4144,14 +3941,14 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto abort_with_state;
 	}
 	if (mgp->msix_enabled)
-		dev_info(dev, "%d MSI-X IRQs, tx bndry %d, fw %s, WC %s\n",
+		dev_info(dev, "%d MSI-X IRQs, tx bndry %d, fw %s, MTRR %s, WC Enabled\n",
 			 mgp->num_slices, mgp->tx_boundary, mgp->fw_name,
-			 (mgp->wc_enabled ? "Enabled" : "Disabled"));
+			 (mgp->wc_cookie > 0 ? "Enabled" : "Disabled"));
 	else
-		dev_info(dev, "%s IRQ %d, tx bndry %d, fw %s, WC %s\n",
+		dev_info(dev, "%s IRQ %d, tx bndry %d, fw %s, MTRR %s, WC Enabled\n",
 			 mgp->msi_enabled ? "MSI" : "xPIC",
 			 pdev->irq, mgp->tx_boundary, mgp->fw_name,
-			 (mgp->wc_enabled ? "Enabled" : "Disabled"));
+			 (mgp->wc_cookie > 0 ? "Enabled" : "Disabled"));
 
 	board_number++;
 	return 0;
@@ -4173,10 +3970,7 @@ abort_with_ioremap:
 	iounmap(mgp->sram);
 
 abort_with_mtrr:
-#ifdef CONFIG_MTRR
-	if (mgp->mtrr >= 0)
-		mtrr_del(mgp->mtrr, mgp->iomem_base, mgp->board_span);
-#endif
+	arch_phys_wc_del(mgp->wc_cookie);
 	dma_free_coherent(&pdev->dev, sizeof(*mgp->cmd),
 			  mgp->cmd, mgp->cmd_bus);
 
@@ -4218,14 +4012,9 @@ static void myri10ge_remove(struct pci_dev *pdev)
 	pci_restore_state(pdev);
 
 	iounmap(mgp->sram);
-
-#ifdef CONFIG_MTRR
-	if (mgp->mtrr >= 0)
-		mtrr_del(mgp->mtrr, mgp->iomem_base, mgp->board_span);
-#endif
+	arch_phys_wc_del(mgp->wc_cookie);
 	myri10ge_free_slices(mgp);
-	if (mgp->msix_vectors != NULL)
-		kfree(mgp->msix_vectors);
+	kfree(mgp->msix_vectors);
 	dma_free_coherent(&pdev->dev, sizeof(*mgp->cmd),
 			  mgp->cmd, mgp->cmd_bus);
 

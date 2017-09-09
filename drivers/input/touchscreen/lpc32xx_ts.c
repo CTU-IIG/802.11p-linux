@@ -139,14 +139,14 @@ static void lpc32xx_stop_tsc(struct lpc32xx_tsc *tsc)
 		   tsc_readl(tsc, LPC32XX_TSC_CON) &
 			     ~LPC32XX_TSC_ADCCON_AUTO_EN);
 
-	clk_disable(tsc->clk);
+	clk_disable_unprepare(tsc->clk);
 }
 
 static void lpc32xx_setup_tsc(struct lpc32xx_tsc *tsc)
 {
 	u32 tmp;
 
-	clk_enable(tsc->clk);
+	clk_prepare_enable(tsc->clk);
 
 	tmp = tsc_readl(tsc, LPC32XX_TSC_CON) & ~LPC32XX_TSC_ADCCON_POWER_UP;
 
@@ -313,7 +313,6 @@ static int lpc32xx_ts_remove(struct platform_device *pdev)
 	struct lpc32xx_tsc *tsc = platform_get_drvdata(pdev);
 	struct resource *res;
 
-	device_init_wakeup(&pdev->dev, 0);
 	free_irq(tsc->irq, tsc);
 
 	input_unregister_device(tsc->dev);

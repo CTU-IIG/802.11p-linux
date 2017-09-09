@@ -16,10 +16,10 @@
 #include <linux/magic.h>
 
 #include <xen/xen.h>
+#include <xen/xenbus.h>
 
 #include "xenfs.h"
 #include "../privcmd.h"
-#include "../xenbus/xenbus_comms.h"
 
 #include <asm/xen/hypervisor.h>
 
@@ -57,6 +57,9 @@ static int xenfs_fill_super(struct super_block *sb, void *data, int silent)
 		{ "privcmd", &xen_privcmd_fops, S_IRUSR|S_IWUSR },
 		{ "xsd_kva", &xsd_kva_file_ops, S_IRUSR|S_IWUSR},
 		{ "xsd_port", &xsd_port_file_ops, S_IRUSR|S_IWUSR},
+#ifdef CONFIG_XEN_SYMS
+		{ "xensyms", &xensyms_ops, S_IRUSR},
+#endif
 		{""},
 	};
 

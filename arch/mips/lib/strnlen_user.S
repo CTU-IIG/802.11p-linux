@@ -8,6 +8,7 @@
  */
 #include <asm/asm.h>
 #include <asm/asm-offsets.h>
+#include <asm/export.h>
 #include <asm/regdef.h>
 
 #define EX(insn,reg,addr,handler)			\
@@ -34,7 +35,12 @@ LEAF(__strnlen_\func\()_asm)
 FEXPORT(__strnlen_\func\()_nocheck_asm)
 	move		v0, a0
 	PTR_ADDU	a1, a0			# stop pointer
-1:	beq		v0, a1, 1f		# limit reached?
+1:
+#ifdef CONFIG_CPU_DADDI_WORKAROUNDS
+	.set		noat
+	li		AT, 1
+#endif
+	beq		v0, a1, 1f		# limit reached?
 .ifeqs "\func", "kernel"
 	EX(lb, t0, (v0), .Lfault\@)
 .else
@@ -42,7 +48,13 @@ FEXPORT(__strnlen_\func\()_nocheck_asm)
 .endif
 	.set		noreorder
 	bnez		t0, 1b
-1:	 PTR_ADDIU	v0, 1
+1:
+#ifndef CONFIG_CPU_DADDI_WORKAROUNDS
+	 PTR_ADDIU	v0, 1
+#else
+	 PTR_ADDU	v0, AT
+	.set		at
+#endif
 	.set		reorder
 	PTR_SUBU	v0, a0
 	jr		ra
@@ -59,9 +71,13 @@ FEXPORT(__strnlen_\func\()_nocheck_asm)
 	.global __strnlen_user_nocheck_asm
 	.set __strnlen_user_asm, __strnlen_kernel_asm
 	.set __strnlen_user_nocheck_asm, __strnlen_kernel_nocheck_asm
+EXPORT_SYMBOL(__strnlen_user_asm)
+EXPORT_SYMBOL(__strnlen_user_nocheck_asm)
 #endif
 
 __BUILD_STRNLEN_ASM kernel
+EXPORT_SYMBOL(__strnlen_kernel_asm)
+EXPORT_SYMBOL(__strnlen_kernel_nocheck_asm)
 
 #ifdef CONFIG_EVA
 
@@ -69,4 +85,6 @@ __BUILD_STRNLEN_ASM kernel
 	.set eva
 __BUILD_STRNLEN_ASM user
 	.set pop
+EXPORT_SYMBOL(__strnlen_user_asm)
+EXPORT_SYMBOL(__strnlen_user_nocheck_asm)
 #endif

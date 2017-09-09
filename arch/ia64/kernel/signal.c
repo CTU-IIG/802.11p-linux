@@ -22,7 +22,7 @@
 #include <linux/wait.h>
 
 #include <asm/intrinsics.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/rse.h>
 #include <asm/sigcontext.h>
 
@@ -46,7 +46,7 @@ restore_sigcontext (struct sigcontext __user *sc, struct sigscratch *scr)
 	long err;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+	current->restart_block.fn = do_no_restart_syscall;
 
 	/* restore scratch that always needs gets updated during signal delivery: */
 	err  = __get_user(flags, &sc->sc_flags);

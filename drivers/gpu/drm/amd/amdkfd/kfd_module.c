@@ -29,12 +29,11 @@
 #define KFD_DRIVER_AUTHOR	"AMD Inc. and others"
 
 #define KFD_DRIVER_DESC		"Standalone HSA driver for AMD's GPUs"
-#define KFD_DRIVER_DATE		"20141113"
+#define KFD_DRIVER_DATE		"20150421"
 #define KFD_DRIVER_MAJOR	0
 #define KFD_DRIVER_MINOR	7
-#define KFD_DRIVER_PATCHLEVEL	0
+#define KFD_DRIVER_PATCHLEVEL	2
 
-const struct kfd2kgd_calls *kfd2kgd;
 static const struct kgd2kfd_calls kgd2kfd = {
 	.exit		= kgd2kfd_exit,
 	.probe		= kgd2kfd_probe,
@@ -48,37 +47,35 @@ static const struct kgd2kfd_calls kgd2kfd = {
 int sched_policy = KFD_SCHED_POLICY_HWS;
 module_param(sched_policy, int, 0444);
 MODULE_PARM_DESC(sched_policy,
-	"Kernel cmdline parameter that defines the amdkfd scheduling policy");
+	"Scheduling policy (0 = HWS (Default), 1 = HWS without over-subscription, 2 = Non-HWS (Used for debugging only)");
 
-int max_num_of_processes = KFD_MAX_NUM_OF_PROCESSES_DEFAULT;
-module_param(max_num_of_processes, int, 0444);
-MODULE_PARM_DESC(max_num_of_processes,
-	"Kernel cmdline parameter that defines the amdkfd maximum number of supported processes");
+int max_num_of_queues_per_device = KFD_MAX_NUM_OF_QUEUES_PER_DEVICE_DEFAULT;
+module_param(max_num_of_queues_per_device, int, 0444);
+MODULE_PARM_DESC(max_num_of_queues_per_device,
+	"Maximum number of supported queues per device (1 = Minimum, 4096 = default)");
 
-int max_num_of_queues_per_process = KFD_MAX_NUM_OF_QUEUES_PER_PROCESS_DEFAULT;
-module_param(max_num_of_queues_per_process, int, 0444);
-MODULE_PARM_DESC(max_num_of_queues_per_process,
-	"Kernel cmdline parameter that defines the amdkfd maximum number of supported queues per process");
+int send_sigterm;
+module_param(send_sigterm, int, 0444);
+MODULE_PARM_DESC(send_sigterm,
+	"Send sigterm to HSA process on unhandled exception (0 = disable, 1 = enable)");
 
-bool kgd2kfd_init(unsigned interface_version,
-		  const struct kfd2kgd_calls *f2g,
-		  const struct kgd2kfd_calls **g2f)
+static int amdkfd_init_completed;
+
+int kgd2kfd_init(unsigned interface_version, const struct kgd2kfd_calls **g2f)
 {
+	if (!amdkfd_init_completed)
+		return -EPROBE_DEFER;
+
 	/*
 	 * Only one interface version is supported,
 	 * no kfd/kgd version skew allowed.
 	 */
 	if (interface_version != KFD_INTERFACE_VERSION)
-		return false;
+		return -EINVAL;
 
-	/* Protection against multiple amd kgd loads */
-	if (kfd2kgd)
-		return true;
-
-	kfd2kgd = f2g;
 	*g2f = &kgd2kfd;
 
-	return true;
+	return 0;
 }
 EXPORT_SYMBOL(kgd2kfd_init);
 
@@ -90,8 +87,6 @@ static int __init kfd_module_init(void)
 {
 	int err;
 
-	kfd2kgd = NULL;
-
 	/* Verify module parameters */
 	if ((sched_policy < KFD_SCHED_POLICY_HWS) ||
 		(sched_policy > KFD_SCHED_POLICY_NO_HWS)) {
@@ -100,16 +95,10 @@ static int __init kfd_module_init(void)
 	}
 
 	/* Verify module parameters */
-	if ((max_num_of_processes < 0) ||
-		(max_num_of_processes > KFD_MAX_NUM_OF_PROCESSES)) {
-		pr_err("kfd: max_num_of_processes must be between 0 to KFD_MAX_NUM_OF_PROCESSES\n");
-		return -1;
-	}
-
-	if ((max_num_of_queues_per_process < 0) ||
-		(max_num_of_queues_per_process >
-			KFD_MAX_NUM_OF_QUEUES_PER_PROCESS)) {
-		pr_err("kfd: max_num_of_queues_per_process must be between 0 to KFD_MAX_NUM_OF_QUEUES_PER_PROCESS\n");
+	if ((max_num_of_queues_per_device < 1) ||
+		(max_num_of_queues_per_device >
+			KFD_MAX_NUM_OF_QUEUES_PER_DEVICE)) {
+		pr_err("kfd: max_num_of_queues_per_device must be between 1 to KFD_MAX_NUM_OF_QUEUES_PER_DEVICE\n");
 		return -1;
 	}
 
@@ -127,6 +116,8 @@ static int __init kfd_module_init(void)
 
 	kfd_process_create_wq();
 
+	amdkfd_init_completed = 1;
+
 	dev_info(kfd_device, "Initialized module\n");
 
 	return 0;
@@ -141,6 +132,8 @@ err_pasid:
 
 static void __exit kfd_module_exit(void)
 {
+	amdkfd_init_completed = 0;
+
 	kfd_process_destroy_wq();
 	kfd_topology_shutdown();
 	kfd_chardev_exit();

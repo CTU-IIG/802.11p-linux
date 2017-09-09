@@ -92,7 +92,6 @@ static int snd_cs4231_probe(struct device *dev, unsigned int n)
 {
 	struct snd_card *card;
 	struct snd_wss *chip;
-	struct snd_pcm *pcm;
 	int error;
 
 	error = snd_card_new(dev, index[n], id[n], THIS_MODULE, 0, &card);
@@ -106,15 +105,15 @@ static int snd_cs4231_probe(struct device *dev, unsigned int n)
 
 	card->private_data = chip;
 
-	error = snd_wss_pcm(chip, 0, &pcm);
+	error = snd_wss_pcm(chip, 0);
 	if (error < 0)
 		goto out;
 
 	strcpy(card->driver, "CS4231");
-	strcpy(card->shortname, pcm->name);
+	strcpy(card->shortname, chip->pcm->name);
 
 	sprintf(card->longname, "%s at 0x%lx, irq %d, dma %d",
-		pcm->name, chip->port, irq[n], dma1[n]);
+		chip->pcm->name, chip->port, irq[n], dma1[n]);
 	if (dma2[n] >= 0)
 		sprintf(card->longname + strlen(card->longname), "&%d", dma2[n]);
 
@@ -122,7 +121,7 @@ static int snd_cs4231_probe(struct device *dev, unsigned int n)
 	if (error < 0)
 		goto out;
 
-	error = snd_wss_timer(chip, 0, NULL);
+	error = snd_wss_timer(chip, 0);
 	if (error < 0)
 		goto out;
 
@@ -187,15 +186,4 @@ static struct isa_driver snd_cs4231_driver = {
 	}
 };
 
-static int __init alsa_card_cs4231_init(void)
-{
-	return isa_register_driver(&snd_cs4231_driver, SNDRV_CARDS);
-}
-
-static void __exit alsa_card_cs4231_exit(void)
-{
-	isa_unregister_driver(&snd_cs4231_driver);
-}
-
-module_init(alsa_card_cs4231_init);
-module_exit(alsa_card_cs4231_exit);
+module_isa_driver(snd_cs4231_driver, SNDRV_CARDS);

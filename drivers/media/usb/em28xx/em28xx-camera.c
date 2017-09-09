@@ -19,13 +19,14 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
+#include "em28xx.h"
+
 #include <linux/i2c.h>
+#include <linux/usb.h>
 #include <media/soc_camera.h>
-#include <media/mt9v011.h>
+#include <media/i2c/mt9v011.h>
 #include <media/v4l2-clk.h>
 #include <media/v4l2-common.h>
-
-#include "em28xx.h"
 
 /* Possible i2c addresses of Micron sensors */
 static unsigned short micron_sensor_addrs[] = {
@@ -64,6 +65,8 @@ static int em28xx_initialize_mt9m111(struct em28xx *dev)
 		i2c_master_send(&dev->i2c_client[dev->def_i2c_bus],
 				&regs[i][0], 3);
 
+	/* FIXME: This won't be creating a sensor at the media graph */
+
 	return 0;
 }
 
@@ -91,6 +94,8 @@ static int em28xx_initialize_mt9m001(struct em28xx *dev)
 		i2c_master_send(&dev->i2c_client[dev->def_i2c_bus],
 				&regs[i][0], 3);
 
+	/* FIXME: This won't be creating a sensor at the media graph */
+
 	return 0;
 }
 
@@ -116,14 +121,16 @@ static int em28xx_probe_sensor_micron(struct em28xx *dev)
 		ret = i2c_master_send(&client, &reg, 1);
 		if (ret < 0) {
 			if (ret != -ENXIO)
-				em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-					      client.addr << 1, ret);
+				dev_err(&dev->intf->dev,
+					"couldn't read from i2c device 0x%02x: error %i\n",
+				       client.addr << 1, ret);
 			continue;
 		}
 		ret = i2c_master_recv(&client, (u8 *)&id_be, 2);
 		if (ret < 0) {
-			em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-				      client.addr << 1, ret);
+			dev_err(&dev->intf->dev,
+				"couldn't read from i2c device 0x%02x: error %i\n",
+				client.addr << 1, ret);
 			continue;
 		}
 		id = be16_to_cpu(id_be);
@@ -131,14 +138,16 @@ static int em28xx_probe_sensor_micron(struct em28xx *dev)
 		reg = 0xff;
 		ret = i2c_master_send(&client, &reg, 1);
 		if (ret < 0) {
-			em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-				      client.addr << 1, ret);
+			dev_err(&dev->intf->dev,
+				"couldn't read from i2c device 0x%02x: error %i\n",
+				client.addr << 1, ret);
 			continue;
 		}
 		ret = i2c_master_recv(&client, (u8 *)&id_be, 2);
 		if (ret < 0) {
-			em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-				      client.addr << 1, ret);
+			dev_err(&dev->intf->dev,
+				"couldn't read from i2c device 0x%02x: error %i\n",
+				client.addr << 1, ret);
 			continue;
 		}
 		/* Validate chip ID to be sure we have a Micron device */
@@ -176,15 +185,17 @@ static int em28xx_probe_sensor_micron(struct em28xx *dev)
 			dev->em28xx_sensor = EM28XX_MT9M001;
 			break;
 		default:
-			em28xx_info("unknown Micron sensor detected: 0x%04x\n",
-				    id);
+			dev_info(&dev->intf->dev,
+				 "unknown Micron sensor detected: 0x%04x\n", id);
 			return 0;
 		}
 
 		if (dev->em28xx_sensor == EM28XX_NOSENSOR)
-			em28xx_info("unsupported sensor detected: %s\n", name);
+			dev_info(&dev->intf->dev,
+				 "unsupported sensor detected: %s\n", name);
 		else
-			em28xx_info("sensor %s detected\n", name);
+			dev_info(&dev->intf->dev,
+				 "sensor %s detected\n", name);
 
 		dev->i2c_client[dev->def_i2c_bus].addr = client.addr;
 		return 0;
@@ -214,16 +225,18 @@ static int em28xx_probe_sensor_omnivision(struct em28xx *dev)
 		ret = i2c_smbus_read_byte_data(&client, reg);
 		if (ret < 0) {
 			if (ret != -ENXIO)
-				em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-					      client.addr << 1, ret);
+				dev_err(&dev->intf->dev,
+					"couldn't read from i2c device 0x%02x: error %i\n",
+					client.addr << 1, ret);
 			continue;
 		}
 		id = ret << 8;
 		reg = 0x1d;
 		ret = i2c_smbus_read_byte_data(&client, reg);
 		if (ret < 0) {
-			em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-				      client.addr << 1, ret);
+			dev_err(&dev->intf->dev,
+				"couldn't read from i2c device 0x%02x: error %i\n",
+				client.addr << 1, ret);
 			continue;
 		}
 		id += ret;
@@ -234,16 +247,18 @@ static int em28xx_probe_sensor_omnivision(struct em28xx *dev)
 		reg = 0x0a;
 		ret = i2c_smbus_read_byte_data(&client, reg);
 		if (ret < 0) {
-			em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-				      client.addr << 1, ret);
+			dev_err(&dev->intf->dev,
+				"couldn't read from i2c device 0x%02x: error %i\n",
+				client.addr << 1, ret);
 			continue;
 		}
 		id = ret << 8;
 		reg = 0x0b;
 		ret = i2c_smbus_read_byte_data(&client, reg);
 		if (ret < 0) {
-			em28xx_errdev("couldn't read from i2c device 0x%02x: error %i\n",
-				      client.addr << 1, ret);
+			dev_err(&dev->intf->dev,
+				"couldn't read from i2c device 0x%02x: error %i\n",
+				client.addr << 1, ret);
 			continue;
 		}
 		id += ret;
@@ -281,15 +296,18 @@ static int em28xx_probe_sensor_omnivision(struct em28xx *dev)
 			name = "OV9655";
 			break;
 		default:
-			em28xx_info("unknown OmniVision sensor detected: 0x%04x\n",
-				    id);
+			dev_info(&dev->intf->dev,
+				 "unknown OmniVision sensor detected: 0x%04x\n",
+				id);
 			return 0;
 		}
 
 		if (dev->em28xx_sensor == EM28XX_NOSENSOR)
-			em28xx_info("unsupported sensor detected: %s\n", name);
+			dev_info(&dev->intf->dev,
+				 "unsupported sensor detected: %s\n", name);
 		else
-			em28xx_info("sensor %s detected\n", name);
+			dev_info(&dev->intf->dev,
+				 "sensor %s detected\n", name);
 
 		dev->i2c_client[dev->def_i2c_bus].addr = client.addr;
 		return 0;
@@ -313,7 +331,8 @@ int em28xx_detect_sensor(struct em28xx *dev)
 	 */
 
 	if (dev->em28xx_sensor == EM28XX_NOSENSOR && ret < 0) {
-		em28xx_info("No sensor detected\n");
+		dev_info(&dev->intf->dev,
+			 "No sensor detected\n");
 		return -ENODEV;
 	}
 
@@ -322,7 +341,7 @@ int em28xx_detect_sensor(struct em28xx *dev)
 
 int em28xx_init_camera(struct em28xx *dev)
 {
-	char clk_name[V4L2_SUBDEV_NAME_SIZE];
+	char clk_name[V4L2_CLK_NAME_SIZE];
 	struct i2c_client *client = &dev->i2c_client[dev->def_i2c_bus];
 	struct i2c_adapter *adap = &dev->i2c_adap[dev->def_i2c_bus];
 	struct em28xx_v4l2 *v4l2 = dev->v4l2;
@@ -330,7 +349,7 @@ int em28xx_init_camera(struct em28xx *dev)
 
 	v4l2_clk_name_i2c(clk_name, sizeof(clk_name),
 			  i2c_adapter_id(adap), client->addr);
-	v4l2->clk = v4l2_clk_register_fixed(clk_name, "mclk", -EINVAL);
+	v4l2->clk = v4l2_clk_register_fixed(clk_name, -EINVAL);
 	if (IS_ERR(v4l2->clk))
 		return PTR_ERR(v4l2->clk);
 
@@ -404,7 +423,9 @@ int em28xx_init_camera(struct em28xx *dev)
 			.addr = client->addr,
 			.platform_data = &camlink,
 		};
-		struct v4l2_mbus_framefmt fmt;
+		struct v4l2_subdev_format format = {
+			.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		};
 
 		/*
 		 * FIXME: sensor supports resolutions up to 1600x1200, but
@@ -425,10 +446,10 @@ int em28xx_init_camera(struct em28xx *dev)
 			break;
 		}
 
-		fmt.code = MEDIA_BUS_FMT_YUYV8_2X8;
-		fmt.width = 640;
-		fmt.height = 480;
-		v4l2_subdev_call(subdev, video, s_mbus_fmt, &fmt);
+		format.format.code = MEDIA_BUS_FMT_YUYV8_2X8;
+		format.format.width = 640;
+		format.format.height = 480;
+		v4l2_subdev_call(subdev, pad, set_fmt, NULL, &format);
 
 		/* NOTE: for UXGA=1600x1200 switch to 12MHz */
 		dev->board.xclk = EM28XX_XCLK_FREQUENCY_24MHZ;

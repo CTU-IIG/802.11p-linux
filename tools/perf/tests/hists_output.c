@@ -9,6 +9,7 @@
 #include "util/parse-events.h"
 #include "tests/tests.h"
 #include "tests/hists_common.h"
+#include <linux/kernel.h>
 
 struct sample {
 	u32 cpu;
@@ -51,28 +52,27 @@ static int add_hist_entries(struct hists *hists, struct machine *machine)
 	size_t i;
 
 	for (i = 0; i < ARRAY_SIZE(fake_samples); i++) {
-		const union perf_event event = {
-			.header = {
-				.misc = PERF_RECORD_MISC_USER,
-			},
-		};
 		struct hist_entry_iter iter = {
+			.evsel = evsel,
+			.sample = &sample,
 			.ops = &hist_iter_normal,
 			.hide_unresolved = false,
 		};
 
+		sample.cpumode = PERF_RECORD_MISC_USER;
 		sample.cpu = fake_samples[i].cpu;
 		sample.pid = fake_samples[i].pid;
 		sample.tid = fake_samples[i].pid;
 		sample.ip = fake_samples[i].ip;
 
-		if (perf_event__preprocess_sample(&event, machine, &al,
-						  &sample) < 0)
+		if (machine__resolve(machine, &al, &sample) < 0)
 			goto out;
 
-		if (hist_entry_iter__add(&iter, &al, evsel, &sample,
-					 PERF_MAX_STACK_DEPTH, NULL) < 0)
+		if (hist_entry_iter__add(&iter, &al, sysctl_perf_event_max_stack,
+					 NULL) < 0) {
+			addr_location__put(&al);
 			goto out;
+		}
 
 		fake_samples[i].thread = al.thread;
 		fake_samples[i].map = al.map;
@@ -93,7 +93,7 @@ static void del_hist_entries(struct hists *hists)
 	struct rb_root *root_out;
 	struct rb_node *node;
 
-	if (sort__need_collapse)
+	if (hists__has(hists, need_collapse))
 		root_in = &hists->entries_collapsed;
 	else
 		root_in = hists->entries_in;
@@ -106,7 +106,7 @@ static void del_hist_entries(struct hists *hists)
 		he = rb_entry(node, struct hist_entry, rb_node);
 		rb_erase(node, root_out);
 		rb_erase(&he->rb_node_in, root_in);
-		hist_entry__free(he);
+		hist_entry__delete(he);
 	}
 }
 
@@ -130,7 +130,7 @@ static int test1(struct perf_evsel *evsel, struct machine *machine)
 	field_order = NULL;
 	sort_order = NULL; /* equivalent to sort_order = "comm,dso,sym" */
 
-	setup_sorting();
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -152,7 +152,7 @@ static int test1(struct perf_evsel *evsel, struct machine *machine)
 		goto out;
 
 	hists__collapse_resort(hists, NULL);
-	hists__output_resort(hists);
+	perf_evsel__output_resort(evsel, NULL);
 
 	if (verbose > 2) {
 		pr_info("[fields = %s, sort = %s]\n", field_order, sort_order);
@@ -232,7 +232,7 @@ static int test2(struct perf_evsel *evsel, struct machine *machine)
 	field_order = "overhead,cpu";
 	sort_order = "pid";
 
-	setup_sorting();
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -252,7 +252,7 @@ static int test2(struct perf_evsel *evsel, struct machine *machine)
 		goto out;
 
 	hists__collapse_resort(hists, NULL);
-	hists__output_resort(hists);
+	perf_evsel__output_resort(evsel, NULL);
 
 	if (verbose > 2) {
 		pr_info("[fields = %s, sort = %s]\n", field_order, sort_order);
@@ -288,7 +288,7 @@ static int test3(struct perf_evsel *evsel, struct machine *machine)
 	field_order = "comm,overhead,dso";
 	sort_order = NULL;
 
-	setup_sorting();
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -306,7 +306,7 @@ static int test3(struct perf_evsel *evsel, struct machine *machine)
 		goto out;
 
 	hists__collapse_resort(hists, NULL);
-	hists__output_resort(hists);
+	perf_evsel__output_resort(evsel, NULL);
 
 	if (verbose > 2) {
 		pr_info("[fields = %s, sort = %s]\n", field_order, sort_order);
@@ -362,7 +362,7 @@ static int test4(struct perf_evsel *evsel, struct machine *machine)
 	field_order = "dso,sym,comm,overhead,dso";
 	sort_order = "sym";
 
-	setup_sorting();
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -384,7 +384,7 @@ static int test4(struct perf_evsel *evsel, struct machine *machine)
 		goto out;
 
 	hists__collapse_resort(hists, NULL);
-	hists__output_resort(hists);
+	perf_evsel__output_resort(evsel, NULL);
 
 	if (verbose > 2) {
 		pr_info("[fields = %s, sort = %s]\n", field_order, sort_order);
@@ -464,7 +464,7 @@ static int test5(struct perf_evsel *evsel, struct machine *machine)
 	field_order = "cpu,pid,comm,dso,sym";
 	sort_order = "dso,pid";
 
-	setup_sorting();
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -487,7 +487,7 @@ static int test5(struct perf_evsel *evsel, struct machine *machine)
 		goto out;
 
 	hists__collapse_resort(hists, NULL);
-	hists__output_resort(hists);
+	perf_evsel__output_resort(evsel, NULL);
 
 	if (verbose > 2) {
 		pr_info("[fields = %s, sort = %s]\n", field_order, sort_order);
@@ -572,7 +572,7 @@ out:
 	return err;
 }
 
-int test__hists_output(void)
+int test__hists_output(int subtest __maybe_unused)
 {
 	int err = TEST_FAIL;
 	struct machines machines;
@@ -590,9 +590,10 @@ int test__hists_output(void)
 
 	TEST_ASSERT_VAL("No memory", evlist);
 
-	err = parse_events(evlist, "cpu-clock");
+	err = parse_events(evlist, "cpu-clock", NULL);
 	if (err)
 		goto out;
+	err = TEST_FAIL;
 
 	machines__init(&machines);
 

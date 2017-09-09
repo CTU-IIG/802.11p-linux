@@ -1,25 +1,30 @@
 #include "comm.h"
 #include "util.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+#include <linux/refcount.h>
 
 struct comm_str {
 	char *str;
 	struct rb_node rb_node;
-	int ref;
+	refcount_t refcnt;
 };
 
 /* Should perhaps be moved to struct machine */
 static struct rb_root comm_str_root;
 
-static void comm_str__get(struct comm_str *cs)
+static struct comm_str *comm_str__get(struct comm_str *cs)
 {
-	cs->ref++;
+	if (cs)
+		refcount_inc(&cs->refcnt);
+	return cs;
 }
 
 static void comm_str__put(struct comm_str *cs)
 {
-	if (!--cs->ref) {
+	if (cs && refcount_dec_and_test(&cs->refcnt)) {
 		rb_erase(&cs->rb_node, &comm_str_root);
 		zfree(&cs->str);
 		free(cs);
@@ -40,6 +45,8 @@ static struct comm_str *comm_str__alloc(const char *str)
 		return NULL;
 	}
 
+	refcount_set(&cs->refcnt, 1);
+
 	return cs;
 }
 
@@ -56,7 +63,7 @@ static struct comm_str *comm_str__findnew(const char *str, struct rb_root *root)
 
 		cmp = strcmp(str, iter->str);
 		if (!cmp)
-			return iter;
+			return comm_str__get(iter);
 
 		if (cmp < 0)
 			p = &(*p)->rb_left;
@@ -90,8 +97,6 @@ struct comm *comm__new(const char *str, u64 timestamp, bool exec)
 		return NULL;
 	}
 
-	comm_str__get(comm->comm_str);
-
 	return comm;
 }
 
@@ -103,7 +108,6 @@ int comm__override(struct comm *comm, const char *str, u64 timestamp, bool exec)
 	if (!new)
 		return -ENOMEM;
 
-	comm_str__get(new);
 	comm_str__put(old);
 	comm->comm_str = new;
 	comm->start = timestamp;

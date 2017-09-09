@@ -70,7 +70,7 @@ static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
 
 static DEFINE_MUTEX(devices_mutex);
-DECLARE_BITMAP(devices_used, SNDRV_CARDS);
+static DECLARE_BITMAP(devices_used, SNDRV_CARDS);
 static struct usb_driver bcd2000_driver;
 
 #ifdef CONFIG_SND_DEBUG
@@ -252,13 +252,13 @@ static void bcd2000_input_complete(struct urb *urb)
 			__func__, ret);
 }
 
-static struct snd_rawmidi_ops bcd2000_midi_output = {
+static const struct snd_rawmidi_ops bcd2000_midi_output = {
 	.open =    bcd2000_midi_output_open,
 	.close =   bcd2000_midi_output_close,
 	.trigger = bcd2000_midi_output_trigger,
 };
 
-static struct snd_rawmidi_ops bcd2000_midi_input = {
+static const struct snd_rawmidi_ops bcd2000_midi_input = {
 	.open =    bcd2000_midi_input_open,
 	.close =   bcd2000_midi_input_close,
 	.trigger = bcd2000_midi_input_trigger,

@@ -374,13 +374,14 @@ SOC_SINGLE("RIN34 Mute Switch", WM8990_RIGHT_LINE_INPUT_3_4_VOLUME,
 static int outmixer_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
 	u32 reg_shift = kcontrol->private_value & 0xfff;
 	int ret = 0;
 	u16 reg;
 
 	switch (reg_shift) {
 	case WM8990_SPEAKER_MIXER | (WM8990_LDSPK_BIT << 8) :
-		reg = snd_soc_read(w->codec, WM8990_OUTPUT_MIXER1);
+		reg = snd_soc_read(codec, WM8990_OUTPUT_MIXER1);
 		if (reg & WM8990_LDLO) {
 			printk(KERN_WARNING
 			"Cannot set as Output Mixer 1 LDLO Set\n");
@@ -388,7 +389,7 @@ static int outmixer_event(struct snd_soc_dapm_widget *w,
 		}
 		break;
 	case WM8990_SPEAKER_MIXER | (WM8990_RDSPK_BIT << 8):
-		reg = snd_soc_read(w->codec, WM8990_OUTPUT_MIXER2);
+		reg = snd_soc_read(codec, WM8990_OUTPUT_MIXER2);
 		if (reg & WM8990_RDRO) {
 			printk(KERN_WARNING
 			"Cannot set as Output Mixer 2 RDRO Set\n");
@@ -396,7 +397,7 @@ static int outmixer_event(struct snd_soc_dapm_widget *w,
 		}
 		break;
 	case WM8990_OUTPUT_MIXER1 | (WM8990_LDLO_BIT << 8):
-		reg = snd_soc_read(w->codec, WM8990_SPEAKER_MIXER);
+		reg = snd_soc_read(codec, WM8990_SPEAKER_MIXER);
 		if (reg & WM8990_LDSPK) {
 			printk(KERN_WARNING
 			"Cannot set as Speaker Mixer LDSPK Set\n");
@@ -404,7 +405,7 @@ static int outmixer_event(struct snd_soc_dapm_widget *w,
 		}
 		break;
 	case WM8990_OUTPUT_MIXER2 | (WM8990_RDRO_BIT << 8):
-		reg = snd_soc_read(w->codec, WM8990_SPEAKER_MIXER);
+		reg = snd_soc_read(codec, WM8990_SPEAKER_MIXER);
 		if (reg & WM8990_RDSPK) {
 			printk(KERN_WARNING
 			"Cannot set as Speaker Mixer RDSPK Set\n");
@@ -417,10 +418,7 @@ static int outmixer_event(struct snd_soc_dapm_widget *w,
 }
 
 /* INMIX dB values */
-static const unsigned int in_mix_tlv[] = {
-	TLV_DB_RANGE_HEAD(1),
-	0, 7, TLV_DB_SCALE_ITEM(-1200, 600, 0),
-};
+static const DECLARE_TLV_DB_SCALE(in_mix_tlv, -1200, 600, 0);
 
 /* Left In PGA Connections */
 static const struct snd_kcontrol_new wm8990_dapm_lin12_pga_controls[] = {
@@ -1123,7 +1121,7 @@ static int wm8990_set_bias_level(struct snd_soc_codec *codec,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
+		if (snd_soc_codec_get_bias_level(codec) == SND_SOC_BIAS_OFF) {
 			ret = regcache_sync(wm8990->regmap);
 			if (ret < 0) {
 				dev_err(codec->dev, "Failed to sync cache: %d\n", ret);
@@ -1226,7 +1224,6 @@ static int wm8990_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	}
 
-	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -1280,7 +1277,7 @@ static int wm8990_probe(struct snd_soc_codec *codec)
 	wm8990_reset(codec);
 
 	/* charge output caps */
-	wm8990_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
+	snd_soc_codec_force_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
 	snd_soc_update_bits(codec, WM8990_AUDIO_INTERFACE_4,
 			    WM8990_ALRCGPIO1, WM8990_ALRCGPIO1);
@@ -1297,17 +1294,19 @@ static int wm8990_probe(struct snd_soc_codec *codec)
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_codec_dev_wm8990 = {
+static const struct snd_soc_codec_driver soc_codec_dev_wm8990 = {
 	.probe =	wm8990_probe,
 	.set_bias_level = wm8990_set_bias_level,
 	.suspend_bias_off = true,
 
-	.controls =	wm8990_snd_controls,
-	.num_controls = ARRAY_SIZE(wm8990_snd_controls),
-	.dapm_widgets = wm8990_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(wm8990_dapm_widgets),
-	.dapm_routes =	wm8990_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(wm8990_dapm_routes),
+	.component_driver = {
+		.controls		= wm8990_snd_controls,
+		.num_controls		= ARRAY_SIZE(wm8990_snd_controls),
+		.dapm_widgets		= wm8990_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(wm8990_dapm_widgets),
+		.dapm_routes		= wm8990_dapm_routes,
+		.num_dapm_routes	= ARRAY_SIZE(wm8990_dapm_routes),
+	},
 };
 
 static const struct regmap_config wm8990_regmap = {
@@ -1356,7 +1355,6 @@ MODULE_DEVICE_TABLE(i2c, wm8990_i2c_id);
 static struct i2c_driver wm8990_i2c_driver = {
 	.driver = {
 		.name = "wm8990",
-		.owner = THIS_MODULE,
 	},
 	.probe =    wm8990_i2c_probe,
 	.remove =   wm8990_i2c_remove,

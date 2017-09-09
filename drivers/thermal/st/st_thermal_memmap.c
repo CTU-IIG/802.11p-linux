@@ -42,7 +42,8 @@ static irqreturn_t st_mmap_thermal_trip_handler(int irq, void *sdata)
 {
 	struct st_thermal_sensor *sensor = sdata;
 
-	thermal_zone_device_update(sensor->thermal_dev);
+	thermal_zone_device_update(sensor->thermal_dev,
+				   THERMAL_EVENT_UNSPECIFIED);
 
 	return IRQ_HANDLED;
 }
@@ -157,7 +158,7 @@ static const struct st_thermal_sensor_ops st_mmap_sensor_ops = {
 };
 
 /* Compatible device data stih416 mpe thermal sensor */
-const struct st_thermal_compat_data st_416mpe_cdata = {
+static const struct st_thermal_compat_data st_416mpe_cdata = {
 	.reg_fields		= st_mmap_thermal_regfields,
 	.ops			= &st_mmap_sensor_ops,
 	.calibration_val	= 14,
@@ -166,7 +167,7 @@ const struct st_thermal_compat_data st_416mpe_cdata = {
 };
 
 /* Compatible device data stih407 thermal sensor */
-const struct st_thermal_compat_data st_407_cdata = {
+static const struct st_thermal_compat_data st_407_cdata = {
 	.reg_fields		= st_mmap_thermal_regfields,
 	.ops			= &st_mmap_sensor_ops,
 	.calibration_val	= 16,
@@ -174,19 +175,19 @@ const struct st_thermal_compat_data st_407_cdata = {
 	.crit_temp		= 120,
 };
 
-static struct of_device_id st_mmap_thermal_of_match[] = {
+static const struct of_device_id st_mmap_thermal_of_match[] = {
 	{ .compatible = "st,stih416-mpe-thermal", .data = &st_416mpe_cdata },
 	{ .compatible = "st,stih407-thermal",     .data = &st_407_cdata },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, st_mmap_thermal_of_match);
 
-int st_mmap_probe(struct platform_device *pdev)
+static int st_mmap_probe(struct platform_device *pdev)
 {
 	return st_thermal_register(pdev,  st_mmap_thermal_of_match);
 }
 
-int st_mmap_remove(struct platform_device *pdev)
+static int st_mmap_remove(struct platform_device *pdev)
 {
 	return st_thermal_unregister(pdev);
 }

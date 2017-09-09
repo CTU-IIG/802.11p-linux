@@ -21,12 +21,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include <errno.h>
 
 #include "../perf.h"
 #include "util.h"
 #include "trace-event.h"
+
+#include "sane_ctype.h"
 
 static int get_common_field(struct scripting_context *context,
 			    int *offset, int *size, const char *type)
@@ -112,8 +113,8 @@ unsigned long long read_size(struct event_format *event, void *ptr, int size)
 	return pevent_read_number(event->pevent, ptr, size);
 }
 
-void event_format__print(struct event_format *event,
-			 int cpu, void *data, int size)
+void event_format__fprintf(struct event_format *event,
+			   int cpu, void *data, int size, FILE *fp)
 {
 	struct pevent_record record;
 	struct trace_seq s;
@@ -125,38 +126,14 @@ void event_format__print(struct event_format *event,
 
 	trace_seq_init(&s);
 	pevent_event_info(&s, event, &record);
-	trace_seq_do_printf(&s);
+	trace_seq_do_fprintf(&s, fp);
 	trace_seq_destroy(&s);
 }
 
-void parse_proc_kallsyms(struct pevent *pevent,
-			 char *file, unsigned int size __maybe_unused)
+void event_format__print(struct event_format *event,
+			 int cpu, void *data, int size)
 {
-	unsigned long long addr;
-	char *func;
-	char *line;
-	char *next = NULL;
-	char *addr_str;
-	char *mod;
-	char *fmt = NULL;
-
-	line = strtok_r(file, "\n", &next);
-	while (line) {
-		mod = NULL;
-		addr_str = strtok_r(line, " ", &fmt);
-		addr = strtoull(addr_str, NULL, 16);
-		/* skip character */
-		strtok_r(NULL, " ", &fmt);
-		func = strtok_r(NULL, "\t", &fmt);
-		mod = strtok_r(NULL, "]", &fmt);
-		/* truncate the extra '[' */
-		if (mod)
-			mod = mod + 1;
-
-		pevent_register_function(pevent, func, addr, mod);
-
-		line = strtok_r(NULL, "\n", &next);
-	}
+	return event_format__fprintf(event, cpu, data, size, stdout);
 }
 
 void parse_ftrace_printk(struct pevent *pevent,
@@ -167,7 +144,7 @@ void parse_ftrace_printk(struct pevent *pevent,
 	char *line;
 	char *next = NULL;
 	char *addr_str;
-	char *fmt;
+	char *fmt = NULL;
 
 	line = strtok_r(file, "\n", &next);
 	while (line) {
@@ -181,6 +158,23 @@ void parse_ftrace_printk(struct pevent *pevent,
 		printk = strdup(fmt+1);
 		line = strtok_r(NULL, "\n", &next);
 		pevent_register_print_string(pevent, printk, addr);
+	}
+}
+
+void parse_saved_cmdline(struct pevent *pevent,
+			 char *file, unsigned int size __maybe_unused)
+{
+	char *comm;
+	char *line;
+	char *next = NULL;
+	int pid;
+
+	line = strtok_r(file, "\n", &next);
+	while (line) {
+		sscanf(line, "%d %ms", &pid, &comm);
+		pevent_register_comm(pevent, comm, pid);
+		free(comm);
+		line = strtok_r(NULL, "\n", &next);
 	}
 }
 
@@ -233,7 +227,7 @@ static const struct flag flags[] = {
 	{ "NET_TX_SOFTIRQ", 2 },
 	{ "NET_RX_SOFTIRQ", 3 },
 	{ "BLOCK_SOFTIRQ", 4 },
-	{ "BLOCK_IOPOLL_SOFTIRQ", 5 },
+	{ "IRQ_POLL_SOFTIRQ", 5 },
 	{ "TASKLET_SOFTIRQ", 6 },
 	{ "SCHED_SOFTIRQ", 7 },
 	{ "HRTIMER_SOFTIRQ", 8 },

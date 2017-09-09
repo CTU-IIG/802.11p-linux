@@ -31,6 +31,7 @@
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/ktime.h>
 #include <linux/blkdev.h>
 #include <linux/io.h>
 #include <scsi/scsi.h>
@@ -858,8 +859,8 @@ static void mvumi_hs_build_page(struct mvumi_hba *mhba,
 	struct mvumi_hs_page2 *hs_page2;
 	struct mvumi_hs_page4 *hs_page4;
 	struct mvumi_hs_page3 *hs_page3;
-	struct timeval time;
-	unsigned int local_time;
+	u64 time;
+	u64 local_time;
 
 	switch (hs_header->page_code) {
 	case HS_PAGE_HOST_INFO:
@@ -877,9 +878,8 @@ static void mvumi_hs_build_page(struct mvumi_hba *mhba,
 		hs_page2->slot_number = 0;
 		hs_page2->intr_level = 0;
 		hs_page2->intr_vector = 0;
-		do_gettimeofday(&time);
-		local_time = (unsigned int) (time.tv_sec -
-						(sys_tz.tz_minuteswest * 60));
+		time = ktime_get_real_seconds();
+		local_time = (time - (sys_tz.tz_minuteswest * 60));
 		hs_page2->seconds_since1970 = local_time;
 		hs_header->checksum = mvumi_calculate_checksum(hs_header,
 						hs_header->frame_length);
@@ -2225,13 +2225,10 @@ static struct scsi_host_template mvumi_template = {
 	.name = "Marvell Storage Controller",
 	.slave_configure = mvumi_slave_configure,
 	.queuecommand = mvumi_queue_command,
+	.eh_timed_out = mvumi_timed_out,
 	.eh_host_reset_handler = mvumi_host_reset,
 	.bios_param = mvumi_bios_param,
 	.this_id = -1,
-};
-
-static struct scsi_transport_template mvumi_transport_template = {
-	.eh_timed_out = mvumi_timed_out,
 };
 
 static int mvumi_cfg_hw_reg(struct mvumi_hba *mhba)
@@ -2451,7 +2448,6 @@ static int mvumi_io_attach(struct mvumi_hba *mhba)
 	host->cmd_per_lun = (mhba->max_io - 1) ? (mhba->max_io - 1) : 1;
 	host->max_id = mhba->max_target_id;
 	host->max_cmd_len = MAX_COMMAND_SIZE;
-	host->transportt = &mvumi_transport_template;
 
 	ret = scsi_add_host(host, &mhba->pdev->dev);
 	if (ret) {
@@ -2629,7 +2625,7 @@ static void mvumi_shutdown(struct pci_dev *pdev)
 	mvumi_flush_cache(mhba);
 }
 
-static int mvumi_suspend(struct pci_dev *pdev, pm_message_t state)
+static int __maybe_unused mvumi_suspend(struct pci_dev *pdev, pm_message_t state)
 {
 	struct mvumi_hba *mhba = NULL;
 
@@ -2648,7 +2644,7 @@ static int mvumi_suspend(struct pci_dev *pdev, pm_message_t state)
 	return 0;
 }
 
-static int mvumi_resume(struct pci_dev *pdev)
+static int __maybe_unused mvumi_resume(struct pci_dev *pdev)
 {
 	int ret;
 	struct mvumi_hba *mhba = NULL;

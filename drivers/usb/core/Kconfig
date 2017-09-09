@@ -26,7 +26,7 @@ config USB_DEFAULT_PERSIST
 	  unplugged, causing any mounted filesystems to be lost.  The
 	  persist feature can still be enabled for individual devices
 	  through the power/persist sysfs node. See
-	  Documentation/usb/persist.txt for more info.
+	  Documentation/driver-api/usb/persist.rst for more info.
 
 	  If you have any questions about this, say Y here, only say N
 	  if you know exactly what you are doing.
@@ -43,7 +43,7 @@ config USB_DYNAMIC_MINORS
 
 config USB_OTG
 	bool "OTG support"
-	depends on PM_RUNTIME
+	depends on PM
 	default n
 	help
 	  The most notable feature of USB OTG is support for a
@@ -77,10 +77,16 @@ config USB_OTG_BLACKLIST_HUB
 
 config USB_OTG_FSM
 	tristate "USB 2.0 OTG FSM implementation"
-	depends on USB
-	select USB_OTG
+	depends on USB && USB_OTG
 	select USB_PHY
 	help
 	  Implements OTG Finite State Machine as specified in On-The-Go
 	  and Embedded Host Supplement to the USB Revision 2.0 Specification.
 
+config USB_LEDS_TRIGGER_USBPORT
+	tristate "USB port LED trigger"
+	depends on USB && LEDS_TRIGGERS
+	help
+	  This driver allows LEDs to be controlled by USB events. Enabling this
+	  trigger allows specifying list of USB ports that should turn on LED
+	  when some USB device gets connected.

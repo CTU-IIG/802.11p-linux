@@ -96,6 +96,9 @@ struct port_info {
 	s16 xact_addr_filt;		/* index of our MAC address filter */
 	u16 rss_size;			/* size of VI's RSS table slice */
 	u8 pidx;			/* index into adapter port[] */
+	s8 mdio_addr;
+	u8 port_type;			/* firmware port type */
+	u8 mod_type;			/* firmware module type */
 	u8 port_id;			/* physical port ID */
 	u8 nqsets;			/* # of "Queue Sets" */
 	u8 first_qset;			/* index of first "Queue Set" */
@@ -345,6 +348,15 @@ struct sge {
 #define for_each_ethrxq(sge, iter) \
 	for (iter = 0; iter < (sge)->ethqsets; iter++)
 
+struct hash_mac_addr {
+	struct list_head list;
+	u8 addr[ETH_ALEN];
+};
+
+struct mbox_list {
+	struct list_head list;
+};
+
 /*
  * Per-"adapter" (Virtual Function) information.
  */
@@ -378,6 +390,17 @@ struct adapter {
 
 	/* various locks */
 	spinlock_t stats_lock;
+
+	/* lock for mailbox cmd list */
+	spinlock_t mbox_lock;
+	struct mbox_list mlist;
+
+	/* support for mailbox command/reply logging */
+#define T4VF_OS_LOG_MBOX_CMDS 256
+	struct mbox_cmd_log *mbox_log;
+
+	/* list of MAC addresses in MPS Hash */
+	struct list_head mac_hlist;
 };
 
 enum { /* adapter flags */
@@ -522,6 +545,7 @@ static inline struct adapter *netdev2adap(const struct net_device *dev)
  * is "contracted" to provide for the common code.
  */
 void t4vf_os_link_changed(struct adapter *, int, int);
+void t4vf_os_portmod_changed(struct adapter *, int);
 
 /*
  * SGE function prototype declarations.

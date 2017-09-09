@@ -569,7 +569,7 @@ static int s3c_hsudc_handle_reqfeat(struct s3c_hsudc *hsudc,
 		hsep = &hsudc->ep[ep_num];
 		switch (le16_to_cpu(ctrl->wValue)) {
 		case USB_ENDPOINT_HALT:
-			if (set || (!set && !hsep->wedge))
+			if (set || !hsep->wedge)
 				s3c_hsudc_set_halt(&hsep->ep, set);
 			return 0;
 		}
@@ -954,7 +954,7 @@ static int s3c_hsudc_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	return 0;
 }
 
-static struct usb_ep_ops s3c_hsudc_ep_ops = {
+static const struct usb_ep_ops s3c_hsudc_ep_ops = {
 	.enable = s3c_hsudc_ep_enable,
 	.disable = s3c_hsudc_ep_disable,
 	.alloc_request = s3c_hsudc_alloc_request,
@@ -1004,6 +1004,21 @@ static void s3c_hsudc_initep(struct s3c_hsudc *hsudc,
 	hsep->ep.desc = NULL;
 	hsep->stopped = 0;
 	hsep->wedge = 0;
+
+	if (epnum == 0) {
+		hsep->ep.caps.type_control = true;
+		hsep->ep.caps.dir_in = true;
+		hsep->ep.caps.dir_out = true;
+	} else {
+		hsep->ep.caps.type_iso = true;
+		hsep->ep.caps.type_bulk = true;
+		hsep->ep.caps.type_int = true;
+	}
+
+	if (epnum & 1)
+		hsep->ep.caps.dir_in = true;
+	else
+		hsep->ep.caps.dir_out = true;
 
 	set_index(hsudc, epnum);
 	writel(hsep->ep.maxpacket, hsudc->regs + S3C_MPR);

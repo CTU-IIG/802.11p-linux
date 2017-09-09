@@ -250,7 +250,7 @@ static int s3c2410ts_probe(struct platform_device *pdev)
 
 	ts.dev = dev;
 
-	info = dev_get_platdata(&pdev->dev);
+	info = dev_get_platdata(dev);
 	if (!info) {
 		dev_err(dev, "no platform data, cannot attach\n");
 		return -EINVAL;
@@ -411,7 +411,7 @@ static const struct dev_pm_ops s3c_ts_pmops = {
 };
 #endif
 
-static struct platform_device_id s3cts_driver_ids[] = {
+static const struct platform_device_id s3cts_driver_ids[] = {
 	{ "s3c2410-ts", 0 },
 	{ "s3c2440-ts", 0 },
 	{ "s3c64xx-ts", FEAT_PEN_IRQ },

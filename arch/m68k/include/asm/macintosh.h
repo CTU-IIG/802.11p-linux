@@ -38,7 +38,7 @@ struct mac_model
 
 #define MAC_ADB_NONE		0
 #define MAC_ADB_II		1
-#define MAC_ADB_IISI		2
+#define MAC_ADB_EGRET		2
 #define MAC_ADB_CUDA		3
 #define MAC_ADB_PB1		4
 #define MAC_ADB_PB2		5
@@ -55,7 +55,7 @@ struct mac_model
 #define MAC_SCSI_QUADRA3	4
 #define MAC_SCSI_IIFX		5
 #define MAC_SCSI_DUO		6
-#define MAC_SCSI_CCL		7
+#define MAC_SCSI_LC		7
 #define MAC_SCSI_LATE		8
 
 #define MAC_IDE_NONE		0

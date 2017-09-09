@@ -7,7 +7,13 @@ This file documents differences between the core properties described
 by mmc.txt and the properties used by the sdhci-tegra driver.
 
 Required properties:
-- compatible : Should be "nvidia,<chip>-sdhci"
+- compatible : should be one of:
+  - "nvidia,tegra20-sdhci": for Tegra20
+  - "nvidia,tegra30-sdhci": for Tegra30
+  - "nvidia,tegra114-sdhci": for Tegra114
+  - "nvidia,tegra124-sdhci": for Tegra124 and Tegra132
+  - "nvidia,tegra210-sdhci": for Tegra210
+  - "nvidia,tegra186-sdhci": for Tegra186
 - clocks : Must contain one entry, for the module clock.
   See ../clocks/clock-bindings.txt for details.
 - resets : Must contain an entry for each entry in reset-names.

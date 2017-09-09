@@ -659,7 +659,7 @@ static void tda9887_release(struct dvb_frontend *fe)
 	fe->analog_demod_priv = NULL;
 }
 
-static struct analog_demod_ops tda9887_ops = {
+static const struct analog_demod_ops tda9887_ops = {
 	.info		= {
 		.name	= "tda9887",
 	},
@@ -707,11 +707,3 @@ struct dvb_frontend *tda9887_attach(struct dvb_frontend *fe,
 EXPORT_SYMBOL_GPL(tda9887_attach);
 
 MODULE_LICENSE("GPL");
-
-/*
- * Overrides for Emacs so that we follow Linus's tabbing style.
- * ---------------------------------------------------------------------------
- * Local variables:
- * c-basic-offset: 8
- * End:
- */

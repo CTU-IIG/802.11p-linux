@@ -47,14 +47,14 @@ static inline void clear_page(void *addr)
 	unsigned long iterations;
 	unsigned long onex, twox, fourx, eightx;
 
-	iterations = ppc64_caches.dlines_per_page / 8;
+	iterations = ppc64_caches.l1d.blocks_per_page / 8;
 
 	/*
 	 * Some verisions of gcc use multiply instructions to
 	 * calculate the offsets so lets give it a hand to
 	 * do better.
 	 */
-	onex = ppc64_caches.dline_size;
+	onex = ppc64_caches.l1d.block_size;
 	twox = onex << 1;
 	fourx = onex << 2;
 	eightx = onex << 3;
@@ -93,7 +93,7 @@ extern u64 ppc64_pft_size;
 
 #define SLICE_LOW_TOP		(0x100000000ul)
 #define SLICE_NUM_LOW		(SLICE_LOW_TOP >> SLICE_LOW_SHIFT)
-#define SLICE_NUM_HIGH		(PGTABLE_RANGE >> SLICE_HIGH_SHIFT)
+#define SLICE_NUM_HIGH		(H_PGTABLE_RANGE >> SLICE_HIGH_SHIFT)
 
 #define GET_LOW_SLICE_INDEX(addr)	((addr) >> SLICE_LOW_SHIFT)
 #define GET_HIGH_SLICE_INDEX(addr)	((addr) >> SLICE_HIGH_SHIFT)
@@ -128,8 +128,6 @@ extern void slice_set_user_psize(struct mm_struct *mm, unsigned int psize);
 extern void slice_set_range_psize(struct mm_struct *mm, unsigned long start,
 				  unsigned long len, unsigned int psize);
 
-#define slice_mm_new_context(mm)	((mm)->context.id == MMU_NO_CONTEXT)
-
 #endif /* __ASSEMBLY__ */
 #else
 #define slice_init()
@@ -151,7 +149,6 @@ do {						\
 
 #define slice_set_range_psize(mm, start, len, psize)	\
 	slice_set_user_psize((mm), (psize))
-#define slice_mm_new_context(mm)	1
 #endif /* CONFIG_PPC_MM_SLICES */
 
 #ifdef CONFIG_HUGETLB_PAGE

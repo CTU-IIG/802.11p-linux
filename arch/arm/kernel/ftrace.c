@@ -20,8 +20,7 @@
 #include <asm/cacheflush.h>
 #include <asm/opcodes.h>
 #include <asm/ftrace.h>
-
-#include "insn.h"
+#include <asm/insn.h>
 
 #ifdef CONFIG_THUMB2_KERNEL
 #define	NOP		0xf85deb04	/* pop.w {lr} */
@@ -219,7 +218,7 @@ void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr,
 	}
 
 	err = ftrace_push_return_trace(old, self_addr, &trace.depth,
-				       frame_pointer);
+				       frame_pointer, NULL);
 	if (err == -EBUSY) {
 		*parent = old;
 		return;

@@ -14,17 +14,15 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * this code is specificly written as a driver for the speakup screenreview
- * package and is not a general device driver.  */
+ * package and is not a general device driver.
+ */
 
 #include <linux/unistd.h>
-#include <linux/miscdevice.h> /* for misc_register, and SYNTH_MINOR */
-#include <linux/poll.h> /* for poll_wait() */
-#include <linux/sched.h> /* schedule(), signal_pending(), TASK_INTERRUPTIBLE */
+#include <linux/miscdevice.h>	/* for misc_register, and SYNTH_MINOR */
+#include <linux/poll.h>		/* for poll_wait() */
+#include <linux/sched/signal.h> /* schedule(), signal_pending(), TASK_INTERRUPTIBLE */
 
 #include "spk_priv.h"
 #include "speakup.h"
@@ -57,45 +55,44 @@ static struct var_t vars[] = {
 	V_LAST_VAR
 };
 
-/*
- * These attributes will appear in /sys/accessibility/speakup/soft.
- */
+/* These attributes will appear in /sys/accessibility/speakup/soft. */
+
 static struct kobj_attribute caps_start_attribute =
-	__ATTR(caps_start, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(caps_start, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute caps_stop_attribute =
-	__ATTR(caps_stop, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(caps_stop, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute freq_attribute =
-	__ATTR(freq, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(freq, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute pitch_attribute =
-	__ATTR(pitch, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(pitch, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute punct_attribute =
-	__ATTR(punct, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(punct, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute rate_attribute =
-	__ATTR(rate, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(rate, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute tone_attribute =
-	__ATTR(tone, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(tone, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute voice_attribute =
-	__ATTR(voice, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(voice, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute vol_attribute =
-	__ATTR(vol, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(vol, 0644, spk_var_show, spk_var_store);
 
 /*
  * We should uncomment the following definition, when we agree on a
  * method of passing a language designation to the software synthesizer.
  * static struct kobj_attribute lang_attribute =
- *	__ATTR(lang, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+ *	__ATTR(lang, 0644, spk_var_show, spk_var_store);
  */
 
 static struct kobj_attribute delay_time_attribute =
-	__ATTR(delay_time, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(delay_time, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute direct_attribute =
-	__ATTR(direct, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(direct, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute full_time_attribute =
-	__ATTR(full_time, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(full_time, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute jiffy_delta_attribute =
-	__ATTR(jiffy_delta, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(jiffy_delta, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute trigger_time_attribute =
-	__ATTR(trigger_time, S_IWUSR|S_IRUGO, spk_var_show, spk_var_store);
+	__ATTR(trigger_time, 0644, spk_var_show, spk_var_store);
 
 /*
  * Create a group of attributes so that we can create and destroy them all
@@ -164,8 +161,8 @@ static char *get_initstring(void)
 	cp = buf;
 	var = synth_soft.vars;
 	while (var->var_id != MAXVARS) {
-		if (var->var_id != CAPS_START && var->var_id != CAPS_STOP
-			&& var->var_id != DIRECT)
+		if (var->var_id != CAPS_START && var->var_id != CAPS_STOP &&
+		    var->var_id != DIRECT)
 			cp = cp + sprintf(cp, var->u.n.synth_fmt,
 					  var->u.n.value);
 		var++;
@@ -279,8 +276,7 @@ static ssize_t softsynth_write(struct file *fp, const char __user *buf,
 	return count;
 }
 
-static unsigned int softsynth_poll(struct file *fp,
-		struct poll_table_struct *wait)
+static unsigned int softsynth_poll(struct file *fp, struct poll_table_struct *wait)
 {
 	unsigned long flags;
 	int ret = 0;
@@ -312,10 +308,8 @@ static const struct file_operations softsynth_fops = {
 	.release = softsynth_close,
 };
 
-
 static int softsynth_probe(struct spk_synth *synth)
 {
-
 	if (misc_registered != 0)
 		return 0;
 	memset(&synth_device, 0, sizeof(synth_device));
@@ -346,25 +340,13 @@ static int softsynth_is_alive(struct spk_synth *synth)
 	return 0;
 }
 
-module_param_named(start, synth_soft.startup, short, S_IRUGO);
+module_param_named(start, synth_soft.startup, short, 0444);
 
 MODULE_PARM_DESC(start, "Start the synthesizer once it is loaded.");
 
+module_spk_synth(synth_soft);
 
-static int __init soft_init(void)
-{
-	return synth_add(&synth_soft);
-}
-
-static void __exit soft_exit(void)
-{
-	synth_remove(&synth_soft);
-}
-
-module_init(soft_init);
-module_exit(soft_exit);
 MODULE_AUTHOR("Kirk Reiser <kirk@braille.uwo.ca>");
 MODULE_DESCRIPTION("Speakup userspace software synthesizer support");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
-

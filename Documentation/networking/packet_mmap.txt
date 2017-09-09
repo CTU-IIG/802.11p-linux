@@ -440,9 +440,10 @@ and the following flags apply:
 +++ Capture process:
      from include/linux/if_packet.h
 
-     #define TP_STATUS_COPY          2 
-     #define TP_STATUS_LOSING        4 
-     #define TP_STATUS_CSUMNOTREADY  8 
+     #define TP_STATUS_COPY          (1 << 1)
+     #define TP_STATUS_LOSING        (1 << 2)
+     #define TP_STATUS_CSUMNOTREADY  (1 << 3)
+     #define TP_STATUS_CSUM_VALID    (1 << 7)
 
 TP_STATUS_COPY        : This flag indicates that the frame (and associated
                         meta information) has been truncated because it's 
@@ -465,6 +466,12 @@ TP_STATUS_CSUMNOTREADY: currently it's used for outgoing IP packets which
                         its checksum will be done in hardware. So while
                         reading the packet we should not try to check the 
                         checksum. 
+
+TP_STATUS_CSUM_VALID  : This flag indicates that at least the transport
+                        header checksum of the packet has been already
+                        validated on the kernel side. If the flag is not set
+                        then we are free to check the checksum by ourselves
+                        provided that TP_STATUS_CSUMNOTREADY is also not set.
 
 for convenience there are also the following defines:
 
@@ -558,7 +565,7 @@ TPACKET_V1 --> TPACKET_V2:
 		   (void *)hdr + TPACKET_ALIGN(sizeof(struct tpacket_hdr))
 
 TPACKET_V2 --> TPACKET_V3:
-	- Flexible buffer implementation:
+	- Flexible buffer implementation for RX_RING:
 		1. Blocks can be configured with non-static frame-size
 		2. Read/poll is at a block-level (as opposed to packet-level)
 		3. Added poll timeout to avoid indefinite user-space wait
@@ -567,7 +574,12 @@ TPACKET_V2 --> TPACKET_V3:
 			4.1 block::timeout
 			4.2 tpkt_hdr::sk_rxhash
 	- RX Hash data available in user space
-	- Currently only RX_RING available
+	- TX_RING semantics are conceptually similar to TPACKET_V2;
+	  use tpacket3_hdr instead of tpacket2_hdr, and TPACKET3_HDRLEN
+	  instead of TPACKET2_HDRLEN. In the current implementation,
+	  the tp_next_offset field in the tpacket3_hdr MUST be set to
+	  zero, indicating that the ring does not hold variable sized frames.
+	  Packets with non-zero values of tp_next_offset will be dropped.
 
 -------------------------------------------------------------------------------
 + AF_PACKET fanout mode

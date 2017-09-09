@@ -1,10 +1,8 @@
-CC := $(CROSS_COMPILE)$(CC)
 CFLAGS += -I../../../../usr/include/
 
-all: kcmp_test
+TEST_GEN_PROGS := kcmp_test
 
-run_tests: all
-	@./kcmp_test || echo "kcmp_test: [FAIL]"
+EXTRA_CLEAN := $(OUTPUT)/kcmp-test-file
 
-clean:
-	$(RM) kcmp_test kcmp-test-file
+include ../lib.mk
+

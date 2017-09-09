@@ -6,6 +6,8 @@
 #endif
 
 #include <linux/prefetch.h>
+#include <asm/barrier.h>
+#include <asm/processor.h>
 
 /*
  * sev and wfe are ARMv6K extensions.  Uniprocessor ARMv6 may not have the K
@@ -50,8 +52,21 @@ static inline void dsb_sev(void)
  * memory.
  */
 
-#define arch_spin_unlock_wait(lock) \
-	do { while (arch_spin_is_locked(lock)) cpu_relax(); } while (0)
+static inline void arch_spin_unlock_wait(arch_spinlock_t *lock)
+{
+	u16 owner = READ_ONCE(lock->tickets.owner);
+
+	for (;;) {
+		arch_spinlock_t tmp = READ_ONCE(*lock);
+
+		if (tmp.tickets.owner == tmp.tickets.next ||
+		    tmp.tickets.owner != owner)
+			break;
+
+		wfe();
+	}
+	smp_acquire__after_ctrl_dep();
+}
 
 #define arch_spin_lock_flags(lock, flags) arch_spin_lock(lock)
 
@@ -120,12 +135,12 @@ static inline int arch_spin_value_unlocked(arch_spinlock_t lock)
 
 static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 {
-	return !arch_spin_value_unlocked(ACCESS_ONCE(*lock));
+	return !arch_spin_value_unlocked(READ_ONCE(*lock));
 }
 
 static inline int arch_spin_is_contended(arch_spinlock_t *lock)
 {
-	struct __raw_tickets tickets = ACCESS_ONCE(lock->tickets);
+	struct __raw_tickets tickets = READ_ONCE(lock->tickets);
 	return (tickets.next - tickets.owner) > 1;
 }
 #define arch_spin_is_contended	arch_spin_is_contended

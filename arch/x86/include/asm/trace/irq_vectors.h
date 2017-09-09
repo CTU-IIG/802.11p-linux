@@ -6,7 +6,7 @@
 
 #include <linux/tracepoint.h>
 
-extern void trace_irq_vector_regfunc(void);
+extern int trace_irq_vector_regfunc(void);
 extern void trace_irq_vector_unregfunc(void);
 
 DECLARE_EVENT_CLASS(x86_irq_vector,
@@ -99,6 +99,12 @@ DEFINE_IRQ_VECTOR_EVENT(call_function_single);
  * vector handler
  */
 DEFINE_IRQ_VECTOR_EVENT(threshold_apic);
+
+/*
+ * deferred_error_apic - called when entering/exiting a deferred apic interrupt
+ * vector handler
+ */
+DEFINE_IRQ_VECTOR_EVENT(deferred_error_apic);
 
 /*
  * thermal_apic - called when entering/exiting a thermal apic interrupt

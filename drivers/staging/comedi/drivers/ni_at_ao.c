@@ -19,8 +19,7 @@
 /*
  * Driver: ni_at_ao
  * Description: National Instruments AT-AO-6/10
- * Devices: (National Instruments) AT-AO-6 [at-ao-6]
- *          (National Instruments) AT-AO-10 [at-ao-10]
+ * Devices: [National Instruments] AT-AO-6 (at-ao-6), AT-AO-10 (at-ao-10)
  * Status: should work
  * Author: David A. Schleef <ds@schleef.org>
  * Updated: Sun Dec 26 12:26:28 EST 2004
@@ -38,7 +37,7 @@
 
 #include "../comedidev.h"
 
-#include "8253.h"
+#include "comedi_8254.h"
 
 /*
  * Register map
@@ -50,43 +49,43 @@
 #define ATAO_CFG2_REG		0x02
 #define ATAO_CFG2_CALLD_NOP	(0 << 14)
 #define ATAO_CFG2_CALLD(x)	((((x) >> 3) + 1) << 14)
-#define ATAO_CFG2_FFRTEN	(1 << 13)
+#define ATAO_CFG2_FFRTEN	BIT(13)
 #define ATAO_CFG2_DACS(x)	(1 << (((x) / 2) + 8))
 #define ATAO_CFG2_LDAC(x)	(1 << (((x) / 2) + 3))
-#define ATAO_CFG2_PROMEN	(1 << 2)
-#define ATAO_CFG2_SCLK		(1 << 1)
-#define ATAO_CFG2_SDATA		(1 << 0)
+#define ATAO_CFG2_PROMEN	BIT(2)
+#define ATAO_CFG2_SCLK		BIT(1)
+#define ATAO_CFG2_SDATA		BIT(0)
 #define ATAO_CFG3_REG		0x04
-#define ATAO_CFG3_DMAMODE	(1 << 6)
-#define ATAO_CFG3_CLKOUT	(1 << 5)
-#define ATAO_CFG3_RCLKEN	(1 << 4)
-#define ATAO_CFG3_DOUTEN2	(1 << 3)
-#define ATAO_CFG3_DOUTEN1	(1 << 2)
-#define ATAO_CFG3_EN2_5V	(1 << 1)
-#define ATAO_CFG3_SCANEN	(1 << 0)
+#define ATAO_CFG3_DMAMODE	BIT(6)
+#define ATAO_CFG3_CLKOUT	BIT(5)
+#define ATAO_CFG3_RCLKEN	BIT(4)
+#define ATAO_CFG3_DOUTEN2	BIT(3)
+#define ATAO_CFG3_DOUTEN1	BIT(2)
+#define ATAO_CFG3_EN2_5V	BIT(1)
+#define ATAO_CFG3_SCANEN	BIT(0)
 #define ATAO_82C53_BASE		0x06
 #define ATAO_CFG1_REG		0x0a
-#define ATAO_CFG1_EXTINT2EN	(1 << 15)
-#define ATAO_CFG1_EXTINT1EN	(1 << 14)
-#define ATAO_CFG1_CNTINT2EN	(1 << 13)
-#define ATAO_CFG1_CNTINT1EN	(1 << 12)
-#define ATAO_CFG1_TCINTEN	(1 << 11)
-#define ATAO_CFG1_CNT1SRC	(1 << 10)
-#define ATAO_CFG1_CNT2SRC	(1 << 9)
-#define ATAO_CFG1_FIFOEN	(1 << 8)
-#define ATAO_CFG1_GRP2WR	(1 << 7)
-#define ATAO_CFG1_EXTUPDEN	(1 << 6)
-#define ATAO_CFG1_DMARQ		(1 << 5)
-#define ATAO_CFG1_DMAEN		(1 << 4)
+#define ATAO_CFG1_EXTINT2EN	BIT(15)
+#define ATAO_CFG1_EXTINT1EN	BIT(14)
+#define ATAO_CFG1_CNTINT2EN	BIT(13)
+#define ATAO_CFG1_CNTINT1EN	BIT(12)
+#define ATAO_CFG1_TCINTEN	BIT(11)
+#define ATAO_CFG1_CNT1SRC	BIT(10)
+#define ATAO_CFG1_CNT2SRC	BIT(9)
+#define ATAO_CFG1_FIFOEN	BIT(8)
+#define ATAO_CFG1_GRP2WR	BIT(7)
+#define ATAO_CFG1_EXTUPDEN	BIT(6)
+#define ATAO_CFG1_DMARQ		BIT(5)
+#define ATAO_CFG1_DMAEN		BIT(4)
 #define ATAO_CFG1_CH(x)		(((x) & 0xf) << 0)
 #define ATAO_STATUS_REG		0x0a
-#define ATAO_STATUS_FH		(1 << 6)
-#define ATAO_STATUS_FE		(1 << 5)
-#define ATAO_STATUS_FF		(1 << 4)
-#define ATAO_STATUS_INT2	(1 << 3)
-#define ATAO_STATUS_INT1	(1 << 2)
-#define ATAO_STATUS_TCINT	(1 << 1)
-#define ATAO_STATUS_PROMOUT	(1 << 0)
+#define ATAO_STATUS_FH		BIT(6)
+#define ATAO_STATUS_FE		BIT(5)
+#define ATAO_STATUS_FF		BIT(4)
+#define ATAO_STATUS_INT2	BIT(3)
+#define ATAO_STATUS_INT1	BIT(2)
+#define ATAO_STATUS_TCINT	BIT(1)
+#define ATAO_STATUS_PROMOUT	BIT(0)
 #define ATAO_FIFO_WRITE_REG	0x0c
 #define ATAO_FIFO_CLEAR_REG	0x0c
 #define ATAO_AO_REG(x)		(0x0c + ((x) * 2))
@@ -96,7 +95,7 @@
 #define ATAO_2_INT1CLR_REG	0x02
 #define ATAO_2_INT2CLR_REG	0x04
 #define ATAO_2_RTSISHFT_REG	0x06
-#define ATAO_2_RTSISHFT_RSI	(1 << 0)
+#define ATAO_2_RTSISHFT_RSI	BIT(0)
 #define ATAO_2_RTSISTRB_REG	0x07
 
 struct atao_board {
@@ -275,7 +274,6 @@ static int atao_calib_insn_write(struct comedi_device *dev,
 static void atao_reset(struct comedi_device *dev)
 {
 	struct atao_private *devpriv = dev->private;
-	unsigned long timer_base = dev->iobase + ATAO_82C53_BASE;
 
 	/* This is the reset sequence described in the manual */
 
@@ -283,9 +281,9 @@ static void atao_reset(struct comedi_device *dev)
 	outw(devpriv->cfg1, dev->iobase + ATAO_CFG1_REG);
 
 	/* Put outputs of counter 1 and counter 2 in a high state */
-	i8254_set_mode(timer_base, 0, 0, I8254_MODE4 | I8254_BINARY);
-	i8254_set_mode(timer_base, 0, 1, I8254_MODE4 | I8254_BINARY);
-	i8254_write(timer_base, 0, 0, 0x0003);
+	comedi_8254_set_mode(dev->pacer, 0, I8254_MODE4 | I8254_BINARY);
+	comedi_8254_set_mode(dev->pacer, 1, I8254_MODE4 | I8254_BINARY);
+	comedi_8254_write(dev->pacer, 0, 0x0003);
 
 	outw(ATAO_CFG2_CALLD_NOP, dev->iobase + ATAO_CFG2_REG);
 
@@ -314,6 +312,11 @@ static int atao_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 
 	devpriv = comedi_alloc_devpriv(dev, sizeof(*devpriv));
 	if (!devpriv)
+		return -ENOMEM;
+
+	dev->pacer = comedi_8254_init(dev->iobase + ATAO_82C53_BASE,
+				      0, I8254_IO8, 0);
+	if (!dev->pacer)
 		return -ENOMEM;
 
 	ret = comedi_alloc_subdevices(dev, 4);

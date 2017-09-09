@@ -41,7 +41,6 @@
 #include <linux/skbuff.h>
 #include <linux/spi/spi.h>
 #include <linux/types.h>
-#include <linux/version.h>
 
 #include "qca_7k.h"
 #include "qca_debug.h"
@@ -571,7 +570,7 @@ qcaspi_spi_thread(void *data)
 			}
 
 			/* can only handle other interrupts
-			 * if sync has occured
+			 * if sync has occurred
 			 */
 			if (qca->sync == QCASPI_SYNC_READY) {
 				if (intr_cause & SPI_INT_PKT_AVLBL)
@@ -720,7 +719,7 @@ qcaspi_netdev_xmit(struct sk_buff *skb, struct net_device *dev)
 		qca->stats.ring_full++;
 	}
 
-	dev->trans_start = jiffies;
+	netif_trans_update(dev);
 
 	if (qca->spi_thread &&
 	    qca->spi_thread->state != TASK_RUNNING)
@@ -735,11 +734,10 @@ qcaspi_netdev_tx_timeout(struct net_device *dev)
 	struct qcaspi *qca = netdev_priv(dev);
 
 	netdev_info(qca->net_dev, "Transmit timeout at %ld, latency %ld\n",
-		    jiffies, jiffies - dev->trans_start);
+		    jiffies, jiffies - dev_trans_start(dev));
 	qca->net_dev->stats.tx_errors++;
-	/* wake the queue if there is room */
-	if (qcaspi_tx_ring_has_space(&qca->txr))
-		netif_wake_queue(dev);
+	/* Trigger tx queue flush and QCA7000 reset */
+	qca->sync = QCASPI_SYNC_UNKNOWN;
 }
 
 static int
@@ -782,24 +780,12 @@ qcaspi_netdev_uninit(struct net_device *dev)
 		dev_kfree_skb(qca->rx_skb);
 }
 
-static int
-qcaspi_netdev_change_mtu(struct net_device *dev, int new_mtu)
-{
-	if ((new_mtu < QCAFRM_ETHMINMTU) || (new_mtu > QCAFRM_ETHMAXMTU))
-		return -EINVAL;
-
-	dev->mtu = new_mtu;
-
-	return 0;
-}
-
 static const struct net_device_ops qcaspi_netdev_ops = {
 	.ndo_init = qcaspi_netdev_init,
 	.ndo_uninit = qcaspi_netdev_uninit,
 	.ndo_open = qcaspi_netdev_open,
 	.ndo_stop = qcaspi_netdev_close,
 	.ndo_start_xmit = qcaspi_netdev_xmit,
-	.ndo_change_mtu = qcaspi_netdev_change_mtu,
 	.ndo_set_mac_address = eth_mac_addr,
 	.ndo_tx_timeout = qcaspi_netdev_tx_timeout,
 	.ndo_validate_addr = eth_validate_addr,
@@ -813,8 +799,12 @@ qcaspi_netdev_setup(struct net_device *dev)
 	dev->netdev_ops = &qcaspi_netdev_ops;
 	qcaspi_set_ethtool_ops(dev);
 	dev->watchdog_timeo = QCASPI_TX_TIMEOUT;
-	dev->flags = IFF_MULTICAST;
+	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 	dev->tx_queue_len = 100;
+
+	/* MTU range: 46 - 1500 */
+	dev->min_mtu = QCAFRM_ETHMINMTU;
+	dev->max_mtu = QCAFRM_ETHMAXMTU;
 
 	qca = netdev_priv(dev);
 	memset(qca, 0, sizeof(struct qcaspi));
@@ -840,7 +830,7 @@ static const struct of_device_id qca_spi_of_match[] = {
 MODULE_DEVICE_TABLE(of, qca_spi_of_match);
 
 static int
-qca_spi_probe(struct spi_device *spi_device)
+qca_spi_probe(struct spi_device *spi)
 {
 	struct qcaspi *qca = NULL;
 	struct net_device *qcaspi_devs = NULL;
@@ -848,52 +838,52 @@ qca_spi_probe(struct spi_device *spi_device)
 	u16 signature;
 	const char *mac;
 
-	if (!spi_device->dev.of_node) {
-		dev_err(&spi_device->dev, "Missing device tree\n");
+	if (!spi->dev.of_node) {
+		dev_err(&spi->dev, "Missing device tree\n");
 		return -EINVAL;
 	}
 
-	legacy_mode = of_property_read_bool(spi_device->dev.of_node,
+	legacy_mode = of_property_read_bool(spi->dev.of_node,
 					    "qca,legacy-mode");
 
 	if (qcaspi_clkspeed == 0) {
-		if (spi_device->max_speed_hz)
-			qcaspi_clkspeed = spi_device->max_speed_hz;
+		if (spi->max_speed_hz)
+			qcaspi_clkspeed = spi->max_speed_hz;
 		else
 			qcaspi_clkspeed = QCASPI_CLK_SPEED;
 	}
 
 	if ((qcaspi_clkspeed < QCASPI_CLK_SPEED_MIN) ||
 	    (qcaspi_clkspeed > QCASPI_CLK_SPEED_MAX)) {
-		dev_info(&spi_device->dev, "Invalid clkspeed: %d\n",
+		dev_info(&spi->dev, "Invalid clkspeed: %d\n",
 			 qcaspi_clkspeed);
 		return -EINVAL;
 	}
 
 	if ((qcaspi_burst_len < QCASPI_BURST_LEN_MIN) ||
 	    (qcaspi_burst_len > QCASPI_BURST_LEN_MAX)) {
-		dev_info(&spi_device->dev, "Invalid burst len: %d\n",
+		dev_info(&spi->dev, "Invalid burst len: %d\n",
 			 qcaspi_burst_len);
 		return -EINVAL;
 	}
 
 	if ((qcaspi_pluggable < QCASPI_PLUGGABLE_MIN) ||
 	    (qcaspi_pluggable > QCASPI_PLUGGABLE_MAX)) {
-		dev_info(&spi_device->dev, "Invalid pluggable: %d\n",
+		dev_info(&spi->dev, "Invalid pluggable: %d\n",
 			 qcaspi_pluggable);
 		return -EINVAL;
 	}
 
-	dev_info(&spi_device->dev, "ver=%s, clkspeed=%d, burst_len=%d, pluggable=%d\n",
+	dev_info(&spi->dev, "ver=%s, clkspeed=%d, burst_len=%d, pluggable=%d\n",
 		 QCASPI_DRV_VERSION,
 		 qcaspi_clkspeed,
 		 qcaspi_burst_len,
 		 qcaspi_pluggable);
 
-	spi_device->mode = SPI_MODE_3;
-	spi_device->max_speed_hz = qcaspi_clkspeed;
-	if (spi_setup(spi_device) < 0) {
-		dev_err(&spi_device->dev, "Unable to setup SPI device\n");
+	spi->mode = SPI_MODE_3;
+	spi->max_speed_hz = qcaspi_clkspeed;
+	if (spi_setup(spi) < 0) {
+		dev_err(&spi->dev, "Unable to setup SPI device\n");
 		return -EFAULT;
 	}
 
@@ -906,21 +896,23 @@ qca_spi_probe(struct spi_device *spi_device)
 	qca = netdev_priv(qcaspi_devs);
 	if (!qca) {
 		free_netdev(qcaspi_devs);
-		dev_err(&spi_device->dev, "Fail to retrieve private structure\n");
+		dev_err(&spi->dev, "Fail to retrieve private structure\n");
 		return -ENOMEM;
 	}
 	qca->net_dev = qcaspi_devs;
-	qca->spi_dev = spi_device;
+	qca->spi_dev = spi;
 	qca->legacy_mode = legacy_mode;
 
-	mac = of_get_mac_address(spi_device->dev.of_node);
+	spi_set_drvdata(spi, qcaspi_devs);
+
+	mac = of_get_mac_address(spi->dev.of_node);
 
 	if (mac)
 		ether_addr_copy(qca->net_dev->dev_addr, mac);
 
 	if (!is_valid_ether_addr(qca->net_dev->dev_addr)) {
 		eth_hw_addr_random(qca->net_dev);
-		dev_info(&spi_device->dev, "Using random MAC address: %pM\n",
+		dev_info(&spi->dev, "Using random MAC address: %pM\n",
 			 qca->net_dev->dev_addr);
 	}
 
@@ -931,7 +923,7 @@ qca_spi_probe(struct spi_device *spi_device)
 		qcaspi_read_register(qca, SPI_REG_SIGNATURE, &signature);
 
 		if (signature != QCASPI_GOOD_SIGNATURE) {
-			dev_err(&spi_device->dev, "Invalid signature (0x%04X)\n",
+			dev_err(&spi->dev, "Invalid signature (0x%04X)\n",
 				signature);
 			free_netdev(qcaspi_devs);
 			return -EFAULT;
@@ -939,13 +931,11 @@ qca_spi_probe(struct spi_device *spi_device)
 	}
 
 	if (register_netdev(qcaspi_devs)) {
-		dev_info(&spi_device->dev, "Unable to register net device %s\n",
+		dev_info(&spi->dev, "Unable to register net device %s\n",
 			 qcaspi_devs->name);
 		free_netdev(qcaspi_devs);
 		return -EFAULT;
 	}
-
-	spi_set_drvdata(spi_device, qcaspi_devs);
 
 	qcaspi_init_device_debugfs(qca);
 
@@ -953,9 +943,9 @@ qca_spi_probe(struct spi_device *spi_device)
 }
 
 static int
-qca_spi_remove(struct spi_device *spi_device)
+qca_spi_remove(struct spi_device *spi)
 {
-	struct net_device *qcaspi_devs = spi_get_drvdata(spi_device);
+	struct net_device *qcaspi_devs = spi_get_drvdata(spi);
 	struct qcaspi *qca = netdev_priv(qcaspi_devs);
 
 	qcaspi_remove_device_debugfs(qca);
@@ -975,7 +965,6 @@ MODULE_DEVICE_TABLE(spi, qca_spi_id);
 static struct spi_driver qca_spi_driver = {
 	.driver	= {
 		.name	= QCASPI_DRV_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = qca_spi_of_match,
 	},
 	.id_table = qca_spi_id,

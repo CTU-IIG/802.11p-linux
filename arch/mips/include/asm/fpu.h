@@ -11,6 +11,8 @@
 #define _ASM_FPU_H
 
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
+#include <linux/ptrace.h>
 #include <linux/thread_info.h>
 #include <linux/bitops.h>
 
@@ -19,6 +21,7 @@
 #include <asm/cpu-features.h>
 #include <asm/fpu_emulator.h>
 #include <asm/hazards.h>
+#include <asm/ptrace.h>
 #include <asm/processor.h>
 #include <asm/current.h>
 #include <asm/msa.h>
@@ -30,7 +33,7 @@
 struct sigcontext;
 struct sigcontext32;
 
-extern void _init_fpu(void);
+extern void _init_fpu(unsigned int);
 extern void _save_fp(struct task_struct *);
 extern void _restore_fp(struct task_struct *);
 
@@ -48,6 +51,12 @@ enum fpu_mode {
 #define FPU_FR_MASK		0x1
 };
 
+#define __disable_fpu()							\
+do {									\
+	clear_c0_status(ST0_CU1);					\
+	disable_fpu_hazard();						\
+} while (0)
+
 static inline int __enable_fpu(enum fpu_mode mode)
 {
 	int fr;
@@ -64,18 +73,21 @@ static inline int __enable_fpu(enum fpu_mode mode)
 			return SIGFPE;
 
 		/* set FRE */
-		write_c0_config5(read_c0_config5() | MIPS_CONF5_FRE);
+		set_c0_config5(MIPS_CONF5_FRE);
 		goto fr_common;
 
 	case FPU_64BIT:
-#if !(defined(CONFIG_CPU_MIPS32_R2) || defined(CONFIG_64BIT))
+#if !(defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_CPU_MIPSR6) \
+      || defined(CONFIG_64BIT))
 		/* we only have a 32-bit FPU */
 		return SIGFPE;
 #endif
 		/* fall through */
 	case FPU_32BIT:
-		/* clear FRE */
-		write_c0_config5(read_c0_config5() & ~MIPS_CONF5_FRE);
+		if (cpu_has_fre) {
+			/* clear FRE */
+			clear_c0_config5(MIPS_CONF5_FRE);
+		}
 fr_common:
 		/* set CU1 & change FR appropriately */
 		fr = (int)mode & FPU_FR_MASK;
@@ -83,7 +95,12 @@ fr_common:
 		enable_fpu_hazard();
 
 		/* check FR has the desired value */
-		return (!!(read_c0_status() & ST0_FR) == !!fr) ? 0 : SIGFPE;
+		if (!!(read_c0_status() & ST0_FR) == !!fr)
+			return 0;
+
+		/* unsupported FR value */
+		__disable_fpu();
+		return SIGFPE;
 
 	default:
 		BUG();
@@ -91,12 +108,6 @@ fr_common:
 
 	return SIGFPE;
 }
-
-#define __disable_fpu()							\
-do {									\
-	clear_c0_status(ST0_CU1);					\
-	disable_fpu_hazard();						\
-} while (0)
 
 #define clear_fpu_owner()	clear_thread_flag(TIF_USEDFPU)
 
@@ -156,51 +167,69 @@ static inline int own_fpu(int restore)
 	return ret;
 }
 
-static inline void lose_fpu(int save)
+static inline void lose_fpu_inatomic(int save, struct task_struct *tsk)
 {
-	preempt_disable();
 	if (is_msa_enabled()) {
 		if (save) {
-			save_msa(current);
-			current->thread.fpu.fcr31 =
+			save_msa(tsk);
+			tsk->thread.fpu.fcr31 =
 					read_32bit_cp1_register(CP1_STATUS);
 		}
 		disable_msa();
-		clear_thread_flag(TIF_USEDMSA);
+		clear_tsk_thread_flag(tsk, TIF_USEDMSA);
+		__disable_fpu();
 	} else if (is_fpu_owner()) {
 		if (save)
-			_save_fp(current);
+			_save_fp(tsk);
 		__disable_fpu();
+	} else {
+		/* FPU should not have been left enabled with no owner */
+		WARN(read_c0_status() & ST0_CU1,
+		     "Orphaned FPU left enabled");
 	}
-	KSTK_STATUS(current) &= ~ST0_CU1;
-	clear_thread_flag(TIF_USEDFPU);
+	KSTK_STATUS(tsk) &= ~ST0_CU1;
+	clear_tsk_thread_flag(tsk, TIF_USEDFPU);
+}
+
+static inline void lose_fpu(int save)
+{
+	preempt_disable();
+	lose_fpu_inatomic(save, current);
 	preempt_enable();
 }
 
 static inline int init_fpu(void)
 {
+	unsigned int fcr31 = current->thread.fpu.fcr31;
 	int ret = 0;
 
 	if (cpu_has_fpu) {
+		unsigned int config5;
+
 		ret = __own_fpu();
-		if (!ret) {
-			unsigned int config5 = read_c0_config5();
+		if (ret)
+			return ret;
 
-			/*
-			 * Ensure FRE is clear whilst running _init_fpu, since
-			 * single precision FP instructions are used. If FRE
-			 * was set then we'll just end up initialising all 32
-			 * 64b registers.
-			 */
-			write_c0_config5(config5 & ~MIPS_CONF5_FRE);
-			enable_fpu_hazard();
+		if (!cpu_has_fre) {
+			_init_fpu(fcr31);
 
-			_init_fpu();
-
-			/* Restore FRE */
-			write_c0_config5(config5);
-			enable_fpu_hazard();
+			return 0;
 		}
+
+		/*
+		 * Ensure FRE is clear whilst running _init_fpu, since
+		 * single precision FP instructions are used. If FRE
+		 * was set then we'll just end up initialising all 32
+		 * 64b registers.
+		 */
+		config5 = clear_c0_config5(MIPS_CONF5_FRE);
+		enable_fpu_hazard();
+
+		_init_fpu(fcr31);
+
+		/* Restore FRE */
+		write_c0_config5(config5);
+		enable_fpu_hazard();
 	} else
 		fpu_emulator_init_fpu();
 

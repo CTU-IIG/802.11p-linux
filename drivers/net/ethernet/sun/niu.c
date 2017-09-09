@@ -3341,8 +3341,7 @@ static int niu_rbr_add_page(struct niu *np, struct rx_ring_info *rp,
 
 	niu_hash_page(rp, page, addr);
 	if (rp->rbr_blocks_per_page > 1)
-		atomic_add(rp->rbr_blocks_per_page - 1,
-			   &compound_head(page)->_count);
+		page_ref_add(page, rp->rbr_blocks_per_page - 1);
 
 	for (i = 0; i < rp->rbr_blocks_per_page; i++) {
 		__le32 *rbr = &rp->rbr[start_index + i];
@@ -3787,7 +3786,7 @@ static int niu_poll(struct napi_struct *napi, int budget)
 	work_done = niu_poll_core(np, lp, budget);
 
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		niu_ldg_rearm(np, lp, 1);
 	}
 	return work_done;
@@ -6295,8 +6294,8 @@ no_rings:
 	stats->tx_errors = errors;
 }
 
-static struct rtnl_link_stats64 *niu_get_stats(struct net_device *dev,
-					       struct rtnl_link_stats64 *stats)
+static void niu_get_stats(struct net_device *dev,
+			  struct rtnl_link_stats64 *stats)
 {
 	struct niu *np = netdev_priv(dev);
 
@@ -6304,8 +6303,6 @@ static struct rtnl_link_stats64 *niu_get_stats(struct net_device *dev,
 		niu_get_rx_stats(np, stats);
 		niu_get_tx_stats(np, stats);
 	}
-
-	return stats;
 }
 
 static void niu_load_hash_xmac(struct niu *np, u16 *hash)
@@ -6432,7 +6429,7 @@ static int niu_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 static void niu_netif_stop(struct niu *np)
 {
-	np->dev->trans_start = jiffies;	/* prevent tx timeout */
+	netif_trans_update(np->dev);	/* prevent tx timeout */
 
 	niu_disable_napi(np);
 
@@ -6659,10 +6656,8 @@ static netdev_tx_t niu_start_xmit(struct sk_buff *skb,
 		struct sk_buff *skb_new;
 
 		skb_new = skb_realloc_headroom(skb, len);
-		if (!skb_new) {
-			rp->tx_errors++;
+		if (!skb_new)
 			goto out_drop;
-		}
 		kfree_skb(skb);
 		skb = skb_new;
 	} else
@@ -6757,9 +6752,6 @@ static int niu_change_mtu(struct net_device *dev, int new_mtu)
 	struct niu *np = netdev_priv(dev);
 	int err, orig_jumbo, new_jumbo;
 
-	if (new_mtu < 68 || new_mtu > NIU_MAX_MTU)
-		return -EINVAL;
-
 	orig_jumbo = (dev->mtu > ETH_DATA_LEN);
 	new_jumbo = (new_mtu > ETH_DATA_LEN);
 
@@ -6821,7 +6813,8 @@ static void niu_get_drvinfo(struct net_device *dev,
 			sizeof(info->bus_info));
 }
 
-static int niu_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int niu_get_link_ksettings(struct net_device *dev,
+				  struct ethtool_link_ksettings *cmd)
 {
 	struct niu *np = netdev_priv(dev);
 	struct niu_link_config *lp;
@@ -6829,28 +6822,30 @@ static int niu_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 	lp = &np->link_config;
 
 	memset(cmd, 0, sizeof(*cmd));
-	cmd->phy_address = np->phy_addr;
-	cmd->supported = lp->supported;
-	cmd->advertising = lp->active_advertising;
-	cmd->autoneg = lp->active_autoneg;
-	ethtool_cmd_speed_set(cmd, lp->active_speed);
-	cmd->duplex = lp->active_duplex;
-	cmd->port = (np->flags & NIU_FLAGS_FIBER) ? PORT_FIBRE : PORT_TP;
-	cmd->transceiver = (np->flags & NIU_FLAGS_XCVR_SERDES) ?
-		XCVR_EXTERNAL : XCVR_INTERNAL;
+	cmd->base.phy_address = np->phy_addr;
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
+						lp->supported);
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
+						lp->active_advertising);
+	cmd->base.autoneg = lp->active_autoneg;
+	cmd->base.speed = lp->active_speed;
+	cmd->base.duplex = lp->active_duplex;
+	cmd->base.port = (np->flags & NIU_FLAGS_FIBER) ? PORT_FIBRE : PORT_TP;
 
 	return 0;
 }
 
-static int niu_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int niu_set_link_ksettings(struct net_device *dev,
+				  const struct ethtool_link_ksettings *cmd)
 {
 	struct niu *np = netdev_priv(dev);
 	struct niu_link_config *lp = &np->link_config;
 
-	lp->advertising = cmd->advertising;
-	lp->speed = ethtool_cmd_speed(cmd);
-	lp->duplex = cmd->duplex;
-	lp->autoneg = cmd->autoneg;
+	ethtool_convert_link_mode_to_legacy_u32(&lp->advertising,
+						cmd->link_modes.advertising);
+	lp->speed = cmd->base.speed;
+	lp->duplex = cmd->base.duplex;
+	lp->autoneg = cmd->base.autoneg;
 	return niu_init_link(np);
 }
 
@@ -6990,10 +6985,10 @@ static int niu_class_to_ethflow(u64 class, int *flow_type)
 		*flow_type = IP_USER_FLOW;
 		break;
 	default:
-		return 0;
+		return -EINVAL;
 	}
 
-	return 1;
+	return 0;
 }
 
 static int niu_ethflow_to_class(int flow_type, u64 *class)
@@ -7199,11 +7194,9 @@ static int niu_get_ethtool_tcam_entry(struct niu *np,
 	class = (tp->key[0] & TCAM_V4KEY0_CLASS_CODE) >>
 		TCAM_V4KEY0_CLASS_CODE_SHIFT;
 	ret = niu_class_to_ethflow(class, &fsp->flow_type);
-
 	if (ret < 0) {
 		netdev_info(np->dev, "niu%d: niu_class_to_ethflow failed\n",
 			    parent->index);
-		ret = -EINVAL;
 		goto out;
 	}
 
@@ -7912,14 +7905,14 @@ static const struct ethtool_ops niu_ethtool_ops = {
 	.nway_reset		= niu_nway_reset,
 	.get_eeprom_len		= niu_get_eeprom_len,
 	.get_eeprom		= niu_get_eeprom,
-	.get_settings		= niu_get_settings,
-	.set_settings		= niu_set_settings,
 	.get_strings		= niu_get_strings,
 	.get_sset_count		= niu_get_sset_count,
 	.get_ethtool_stats	= niu_get_ethtool_stats,
 	.set_phys_id		= niu_set_phys_id,
 	.get_rxnfc		= niu_get_nfc,
 	.set_rxnfc		= niu_set_nfc,
+	.get_link_ksettings	= niu_get_link_ksettings,
+	.set_link_ksettings	= niu_set_link_ksettings,
 };
 
 static int niu_ldg_assign_ldn(struct niu *np, struct niu_parent *parent,
@@ -9827,6 +9820,10 @@ static int niu_pci_init_one(struct pci_dev *pdev,
 	pci_save_state(pdev);
 
 	dev->irq = pdev->irq;
+
+	/* MTU range: 68 - 9216 */
+	dev->min_mtu = ETH_MIN_MTU;
+	dev->max_mtu = NIU_MAX_MTU;
 
 	niu_assign_netdev_ops(dev);
 

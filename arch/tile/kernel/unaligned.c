@@ -17,17 +17,19 @@
 #include <linux/smp.h>
 #include <linux/ptrace.h>
 #include <linux/slab.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
 #include <linux/thread_info.h>
 #include <linux/uaccess.h>
 #include <linux/mman.h>
 #include <linux/types.h>
 #include <linux/err.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/compat.h>
 #include <linux/prctl.h>
 #include <asm/cacheflush.h>
 #include <asm/traps.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/unaligned.h>
 #include <arch/abi.h>
 #include <arch/spr_def.h>
@@ -188,7 +190,7 @@ static void find_regs(tilegx_bundle_bits bundle, uint64_t *rd, uint64_t *ra,
 	 * Parse fault bundle, find potential used registers and mark
 	 * corresponding bits in reg_map and alias_map. These 2 bit maps
 	 * are used to find the scratch registers and determine if there
-	 * is register alais.
+	 * is register alias.
 	 */
 	if (bundle & TILEGX_BUNDLE_MODE_MASK) {  /* Y Mode Bundle. */
 
@@ -1487,12 +1489,11 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 						(int)unaligned_fixup,
 						(unsigned long long)regs->ex1,
 						(unsigned long long)regs->pc);
-				return;
+			} else {
+				/* Not fixable. Go panic. */
+				panic("Unalign exception in Kernel. pc=%lx",
+				      regs->pc);
 			}
-			/* Not fixable. Go panic. */
-			panic("Unalign exception in Kernel. pc=%lx",
-			      regs->pc);
-			return;
 		} else {
 			/*
 			 * Try to fix the exception. If we can't, panic the
@@ -1501,8 +1502,8 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 			bundle = GX_INSN_BSWAP(
 				*((tilegx_bundle_bits *)(regs->pc)));
 			jit_bundle_gen(regs, bundle, align_ctl);
-			return;
 		}
+		return;
 	}
 
 	/*
@@ -1530,7 +1531,7 @@ void do_unaligned(struct pt_regs *regs, int vecnum)
 	}
 
 
-	/* Read the bundle casued the exception! */
+	/* Read the bundle caused the exception! */
 	pc = (tilegx_bundle_bits __user *)(regs->pc);
 	if (get_user(bundle, pc) != 0) {
 		/* Probably never be here since pc is valid user address.*/

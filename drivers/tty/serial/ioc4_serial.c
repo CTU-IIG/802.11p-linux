@@ -210,7 +210,7 @@
 #define IOC4_SSCR_PAUSE_STATE   0x40000000  /* Sets when PAUSE takes effect */
 #define IOC4_SSCR_RESET	        0x80000000  /* Reset DMA channels */
 
-/* All producer/comsumer pointers are the same bitfield */
+/* All producer/consumer pointers are the same bitfield */
 #define IOC4_PROD_CONS_PTR_4K   0x00000ff8	/* For 4K buffers */
 #define IOC4_PROD_CONS_PTR_1K   0x000003f8	/* For 1K buffers */
 #define IOC4_PROD_CONS_PTR_OFF           3
@@ -1011,7 +1011,8 @@ static irqreturn_t ioc4_intr(int irq, void *arg)
 		 */
 		for (xx = 0; xx < num_intrs; xx++) {
 			intr_info = &soft->is_intr_type[intr_type].is_intr_info[xx];
-			if ((this_mir = this_ir & intr_info->sd_bits)) {
+			this_mir = this_ir & intr_info->sd_bits;
+			if (this_mir) {
 				/* Disable owned interrupts, call handler */
 				handled++;
 				write_ireg(soft, intr_info->sd_bits, IOC4_W_IEC,
@@ -1081,7 +1082,7 @@ static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
 		if (!port) {
 			printk(KERN_WARNING
 				"IOC4 serial memory not available for port\n");
-			return -ENOMEM;
+			goto free;
 		}
 		spin_lock_init(&port->ip_lock);
 
@@ -1189,6 +1190,11 @@ static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
 				handle_dma_error_intr, port);
 	}
 	return 0;
+
+free:
+	while (port_number)
+		kfree(ports[--port_number]);
+	return -ENOMEM;
 }
 
 /**
@@ -2590,7 +2596,7 @@ static int ic4_request_port(struct uart_port *port)
 
 /* Associate the uart functions above - given to serial core */
 
-static struct uart_ops ioc4_ops = {
+static const struct uart_ops ioc4_ops = {
 	.tx_empty	= ic4_tx_empty,
 	.set_mctrl	= ic4_set_mctrl,
 	.get_mctrl	= ic4_get_mctrl,
@@ -2865,10 +2871,12 @@ ioc4_serial_attach_one(struct ioc4_driver_data *idd)
 
 	/* register port with the serial core - 1 rs232, 1 rs422 */
 
-	if ((ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS232)))
+	ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS232);
+	if (ret)
 		goto out4;
 
-	if ((ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS422)))
+	ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS422);
+	if (ret)
 		goto out5;
 
 	Num_of_ioc4_cards++;

@@ -162,25 +162,23 @@ out:
 static int read_proc_kallsyms(struct pevent *pevent)
 {
 	unsigned int size;
-	char *buf;
 
 	size = read4(pevent);
 	if (!size)
 		return 0;
-
-	buf = malloc(size + 1);
-	if (buf == NULL)
-		return -1;
-
-	if (do_read(buf, size) < 0) {
-		free(buf);
-		return -1;
-	}
-	buf[size] = '\0';
-
-	parse_proc_kallsyms(pevent, buf, size);
-
-	free(buf);
+	/*
+	 * Just skip it, now that we configure libtraceevent to use the
+	 * tools/perf/ symbol resolver.
+	 *
+	 * We need to skip it so that we can continue parsing old perf.data
+	 * files, that contains this /proc/kallsyms payload.
+	 *
+	 * Newer perf.data files will have just the 4-bytes zeros "kallsyms
+	 * payload", so that older tools can continue reading it and interpret
+	 * it as "no kallsyms payload is present".
+	 */
+	lseek(input_fd, size, SEEK_CUR);
+	trace_data_size += size;
 	return 0;
 }
 
@@ -194,7 +192,7 @@ static int read_ftrace_printk(struct pevent *pevent)
 	if (!size)
 		return 0;
 
-	buf = malloc(size);
+	buf = malloc(size + 1);
 	if (buf == NULL)
 		return -1;
 
@@ -202,6 +200,8 @@ static int read_ftrace_printk(struct pevent *pevent)
 		free(buf);
 		return -1;
 	}
+
+	buf[size] = '\0';
 
 	parse_ftrace_printk(pevent, buf, size);
 
@@ -262,39 +262,53 @@ static int read_header_files(struct pevent *pevent)
 
 static int read_ftrace_file(struct pevent *pevent, unsigned long long size)
 {
+	int ret;
 	char *buf;
 
 	buf = malloc(size);
-	if (buf == NULL)
-		return -1;
-
-	if (do_read(buf, size) < 0) {
-		free(buf);
+	if (buf == NULL) {
+		pr_debug("memory allocation failure\n");
 		return -1;
 	}
 
-	parse_ftrace_file(pevent, buf, size);
+	ret = do_read(buf, size);
+	if (ret < 0) {
+		pr_debug("error reading ftrace file.\n");
+		goto out;
+	}
+
+	ret = parse_ftrace_file(pevent, buf, size);
+	if (ret < 0)
+		pr_debug("error parsing ftrace file.\n");
+out:
 	free(buf);
-	return 0;
+	return ret;
 }
 
 static int read_event_file(struct pevent *pevent, char *sys,
 			    unsigned long long size)
 {
+	int ret;
 	char *buf;
 
 	buf = malloc(size);
-	if (buf == NULL)
-		return -1;
-
-	if (do_read(buf, size) < 0) {
-		free(buf);
+	if (buf == NULL) {
+		pr_debug("memory allocation failure\n");
 		return -1;
 	}
 
-	parse_event_file(pevent, buf, size, sys);
+	ret = do_read(buf, size);
+	if (ret < 0) {
+		free(buf);
+		goto out;
+	}
+
+	ret = parse_event_file(pevent, buf, size, sys);
+	if (ret < 0)
+		pr_debug("error parsing event file.\n");
+out:
 	free(buf);
-	return 0;
+	return ret;
 }
 
 static int read_ftrace_files(struct pevent *pevent)
@@ -343,6 +357,36 @@ static int read_event_files(struct pevent *pevent)
 	return 0;
 }
 
+static int read_saved_cmdline(struct pevent *pevent)
+{
+	unsigned long long size;
+	char *buf;
+	int ret;
+
+	/* it can have 0 size */
+	size = read8(pevent);
+	if (!size)
+		return 0;
+
+	buf = malloc(size + 1);
+	if (buf == NULL) {
+		pr_debug("memory allocation failure\n");
+		return -1;
+	}
+
+	ret = do_read(buf, size);
+	if (ret < 0) {
+		pr_debug("error reading saved cmdlines\n");
+		goto out;
+	}
+
+	parse_saved_cmdline(pevent, buf, size);
+	ret = 0;
+out:
+	free(buf);
+	return ret;
+}
+
 ssize_t trace_report(int fd, struct trace_event *tevent, bool __repipe)
 {
 	char buf[BUFSIZ];
@@ -381,10 +425,11 @@ ssize_t trace_report(int fd, struct trace_event *tevent, bool __repipe)
 		return -1;
 	if (show_version)
 		printf("version = %s\n", version);
-	free(version);
 
-	if (do_read(buf, 1) < 0)
+	if (do_read(buf, 1) < 0) {
+		free(version);
 		return -1;
+	}
 	file_bigendian = buf[0];
 	host_bigendian = bigendian();
 
@@ -425,6 +470,11 @@ ssize_t trace_report(int fd, struct trace_event *tevent, bool __repipe)
 	err = read_ftrace_printk(pevent);
 	if (err)
 		goto out;
+	if (atof(version) >= 0.6) {
+		err = read_saved_cmdline(pevent);
+		if (err)
+			goto out;
+	}
 
 	size = trace_data_size;
 	repipe = false;
@@ -440,5 +490,6 @@ ssize_t trace_report(int fd, struct trace_event *tevent, bool __repipe)
 out:
 	if (pevent)
 		trace_event__cleanup(tevent);
+	free(version);
 	return size;
 }

@@ -33,6 +33,7 @@ struct amba_device {
 	struct clk		*pclk;
 	unsigned int		periphid;
 	unsigned int		irq[AMBA_NR_IRQS];
+	char			*driver_override;
 };
 
 struct amba_driver {
@@ -40,8 +41,6 @@ struct amba_driver {
 	int			(*probe)(struct amba_device *, const struct amba_id *);
 	int			(*remove)(struct amba_device *);
 	void			(*shutdown)(struct amba_device *);
-	int			(*suspend)(struct amba_device *, pm_message_t);
-	int			(*resume)(struct amba_device *);
 	const struct amba_id	*id_table;
 };
 
@@ -54,7 +53,13 @@ enum amba_vendor {
 	AMBA_VENDOR_ST = 0x80,
 	AMBA_VENDOR_QCOM = 0x51,
 	AMBA_VENDOR_LSI = 0xb6,
+	AMBA_VENDOR_LINUX = 0xfe,	/* This value is not official */
 };
+
+/* This is used to generate pseudo-ID for AMBA device */
+#define AMBA_LINUX_ID(conf, rev, part) \
+	(((conf) & 0xff) << 24 | ((rev) & 0xf) << 20 | \
+	AMBA_VENDOR_LINUX << 12 | ((part) & 0xfff))
 
 extern struct bus_type amba_bustype;
 
@@ -92,11 +97,15 @@ struct amba_device *amba_find_device(const char *, struct device *, unsigned int
 int amba_request_regions(struct amba_device *, const char *);
 void amba_release_regions(struct amba_device *);
 
-#define amba_pclk_enable(d)	\
-	(IS_ERR((d)->pclk) ? 0 : clk_enable((d)->pclk))
+static inline int amba_pclk_enable(struct amba_device *dev)
+{
+	return clk_enable(dev->pclk);
+}
 
-#define amba_pclk_disable(d)	\
-	do { if (!IS_ERR((d)->pclk)) clk_disable((d)->pclk); } while (0)
+static inline void amba_pclk_disable(struct amba_device *dev)
+{
+	clk_disable(dev->pclk);
+}
 
 static inline int amba_pclk_prepare(struct amba_device *dev)
 {
@@ -159,5 +168,14 @@ struct amba_device name##_device = {				\
  */
 #define module_amba_driver(__amba_drv) \
 	module_driver(__amba_drv, amba_driver_register, amba_driver_unregister)
+
+/*
+ * builtin_amba_driver() - Helper macro for drivers that don't do anything
+ * special in driver initcall.  This eliminates a lot of boilerplate.  Each
+ * driver may only use this macro once, and calling it replaces the instance
+ * device_initcall().
+ */
+#define builtin_amba_driver(__amba_drv) \
+	builtin_driver(__amba_drv, amba_driver_register)
 
 #endif

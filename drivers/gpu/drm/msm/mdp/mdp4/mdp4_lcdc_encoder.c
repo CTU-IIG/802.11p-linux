@@ -23,6 +23,7 @@
 
 struct mdp4_lcdc_encoder {
 	struct drm_encoder base;
+	struct device_node *panel_node;
 	struct drm_panel *panel;
 	struct clk *lcdc_clk;
 	unsigned long int pixclock;
@@ -38,7 +39,7 @@ static struct mdp4_kms *get_kms(struct drm_encoder *encoder)
 	return to_mdp4_kms(to_mdp_kms(priv->kms));
 }
 
-#ifdef CONFIG_MSM_BUS_SCALING
+#ifdef DOWNSTREAM_CONFIG_MSM_BUS_SCALING
 #include <mach/board.h>
 static void bs_init(struct mdp4_lcdc_encoder *mdp4_lcdc_encoder)
 {
@@ -92,7 +93,7 @@ static const struct drm_encoder_funcs mdp4_lcdc_encoder_funcs = {
 };
 
 /* this should probably be a helper: */
-struct drm_connector *get_connector(struct drm_encoder *encoder)
+static struct drm_connector *get_connector(struct drm_encoder *encoder)
 {
 	struct drm_device *dev = encoder->dev;
 	struct drm_connector *connector;
@@ -259,84 +260,6 @@ static void setup_phy(struct drm_encoder *encoder)
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, lvds_phy_cfg0);
 }
 
-static void mdp4_lcdc_encoder_dpms(struct drm_encoder *encoder, int mode)
-{
-	struct drm_device *dev = encoder->dev;
-	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder =
-			to_mdp4_lcdc_encoder(encoder);
-	struct mdp4_kms *mdp4_kms = get_kms(encoder);
-	struct drm_panel *panel = mdp4_lcdc_encoder->panel;
-	bool enabled = (mode == DRM_MODE_DPMS_ON);
-	int i, ret;
-
-	DBG("mode=%d", mode);
-
-	if (enabled == mdp4_lcdc_encoder->enabled)
-		return;
-
-	if (enabled) {
-		unsigned long pc = mdp4_lcdc_encoder->pixclock;
-		int ret;
-
-		bs_set(mdp4_lcdc_encoder, 1);
-
-		for (i = 0; i < ARRAY_SIZE(mdp4_lcdc_encoder->regs); i++) {
-			ret = regulator_enable(mdp4_lcdc_encoder->regs[i]);
-			if (ret)
-				dev_err(dev->dev, "failed to enable regulator: %d\n", ret);
-		}
-
-		DBG("setting lcdc_clk=%lu", pc);
-		ret = clk_set_rate(mdp4_lcdc_encoder->lcdc_clk, pc);
-		if (ret)
-			dev_err(dev->dev, "failed to configure lcdc_clk: %d\n", ret);
-		ret = clk_prepare_enable(mdp4_lcdc_encoder->lcdc_clk);
-		if (ret)
-			dev_err(dev->dev, "failed to enable lcdc_clk: %d\n", ret);
-
-		if (panel)
-			drm_panel_enable(panel);
-
-		setup_phy(encoder);
-
-		mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 1);
-	} else {
-		mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
-
-		if (panel)
-			drm_panel_disable(panel);
-
-		/*
-		 * Wait for a vsync so we know the ENABLE=0 latched before
-		 * the (connector) source of the vsync's gets disabled,
-		 * otherwise we end up in a funny state if we re-enable
-		 * before the disable latches, which results that some of
-		 * the settings changes for the new modeset (like new
-		 * scanout buffer) don't latch properly..
-		 */
-		mdp_irq_wait(&mdp4_kms->base, MDP4_IRQ_PRIMARY_VSYNC);
-
-		clk_disable_unprepare(mdp4_lcdc_encoder->lcdc_clk);
-
-		for (i = 0; i < ARRAY_SIZE(mdp4_lcdc_encoder->regs); i++) {
-			ret = regulator_disable(mdp4_lcdc_encoder->regs[i]);
-			if (ret)
-				dev_err(dev->dev, "failed to disable regulator: %d\n", ret);
-		}
-
-		bs_set(mdp4_lcdc_encoder, 0);
-	}
-
-	mdp4_lcdc_encoder->enabled = enabled;
-}
-
-static bool mdp4_lcdc_encoder_mode_fixup(struct drm_encoder *encoder,
-		const struct drm_display_mode *mode,
-		struct drm_display_mode *adjusted_mode)
-{
-	return true;
-}
-
 static void mdp4_lcdc_encoder_mode_set(struct drm_encoder *encoder,
 		struct drm_display_mode *mode,
 		struct drm_display_mode *adjusted_mode)
@@ -403,13 +326,62 @@ static void mdp4_lcdc_encoder_mode_set(struct drm_encoder *encoder,
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ACTIVE_VEND, 0);
 }
 
-static void mdp4_lcdc_encoder_prepare(struct drm_encoder *encoder)
+static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 {
-	mdp4_lcdc_encoder_dpms(encoder, DRM_MODE_DPMS_OFF);
+	struct drm_device *dev = encoder->dev;
+	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder =
+			to_mdp4_lcdc_encoder(encoder);
+	struct mdp4_kms *mdp4_kms = get_kms(encoder);
+	struct drm_panel *panel;
+	int i, ret;
+
+	if (WARN_ON(!mdp4_lcdc_encoder->enabled))
+		return;
+
+	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
+
+	panel = of_drm_find_panel(mdp4_lcdc_encoder->panel_node);
+	if (panel) {
+		drm_panel_disable(panel);
+		drm_panel_unprepare(panel);
+	}
+
+	/*
+	 * Wait for a vsync so we know the ENABLE=0 latched before
+	 * the (connector) source of the vsync's gets disabled,
+	 * otherwise we end up in a funny state if we re-enable
+	 * before the disable latches, which results that some of
+	 * the settings changes for the new modeset (like new
+	 * scanout buffer) don't latch properly..
+	 */
+	mdp_irq_wait(&mdp4_kms->base, MDP4_IRQ_PRIMARY_VSYNC);
+
+	clk_disable_unprepare(mdp4_lcdc_encoder->lcdc_clk);
+
+	for (i = 0; i < ARRAY_SIZE(mdp4_lcdc_encoder->regs); i++) {
+		ret = regulator_disable(mdp4_lcdc_encoder->regs[i]);
+		if (ret)
+			dev_err(dev->dev, "failed to disable regulator: %d\n", ret);
+	}
+
+	bs_set(mdp4_lcdc_encoder, 0);
+
+	mdp4_lcdc_encoder->enabled = false;
 }
 
-static void mdp4_lcdc_encoder_commit(struct drm_encoder *encoder)
+static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 {
+	struct drm_device *dev = encoder->dev;
+	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder =
+			to_mdp4_lcdc_encoder(encoder);
+	unsigned long pc = mdp4_lcdc_encoder->pixclock;
+	struct mdp4_kms *mdp4_kms = get_kms(encoder);
+	struct drm_panel *panel;
+	int i, ret;
+
+	if (WARN_ON(mdp4_lcdc_encoder->enabled))
+		return;
+
 	/* TODO: hard-coded for 18bpp: */
 	mdp4_crtc_set_config(encoder->crtc,
 			MDP4_DMA_CONFIG_R_BPC(BPC6) |
@@ -420,15 +392,40 @@ static void mdp4_lcdc_encoder_commit(struct drm_encoder *encoder)
 			MDP4_DMA_CONFIG_DEFLKR_EN |
 			MDP4_DMA_CONFIG_DITHER_EN);
 	mdp4_crtc_set_intf(encoder->crtc, INTF_LCDC_DTV, 0);
-	mdp4_lcdc_encoder_dpms(encoder, DRM_MODE_DPMS_ON);
+
+	bs_set(mdp4_lcdc_encoder, 1);
+
+	for (i = 0; i < ARRAY_SIZE(mdp4_lcdc_encoder->regs); i++) {
+		ret = regulator_enable(mdp4_lcdc_encoder->regs[i]);
+		if (ret)
+			dev_err(dev->dev, "failed to enable regulator: %d\n", ret);
+	}
+
+	DBG("setting lcdc_clk=%lu", pc);
+	ret = clk_set_rate(mdp4_lcdc_encoder->lcdc_clk, pc);
+	if (ret)
+		dev_err(dev->dev, "failed to configure lcdc_clk: %d\n", ret);
+	ret = clk_prepare_enable(mdp4_lcdc_encoder->lcdc_clk);
+	if (ret)
+		dev_err(dev->dev, "failed to enable lcdc_clk: %d\n", ret);
+
+	panel = of_drm_find_panel(mdp4_lcdc_encoder->panel_node);
+	if (panel) {
+		drm_panel_prepare(panel);
+		drm_panel_enable(panel);
+	}
+
+	setup_phy(encoder);
+
+	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 1);
+
+	mdp4_lcdc_encoder->enabled = true;
 }
 
 static const struct drm_encoder_helper_funcs mdp4_lcdc_encoder_helper_funcs = {
-	.dpms = mdp4_lcdc_encoder_dpms,
-	.mode_fixup = mdp4_lcdc_encoder_mode_fixup,
 	.mode_set = mdp4_lcdc_encoder_mode_set,
-	.prepare = mdp4_lcdc_encoder_prepare,
-	.commit = mdp4_lcdc_encoder_commit,
+	.disable = mdp4_lcdc_encoder_disable,
+	.enable = mdp4_lcdc_encoder_enable,
 };
 
 long mdp4_lcdc_round_pixclk(struct drm_encoder *encoder, unsigned long rate)
@@ -440,7 +437,7 @@ long mdp4_lcdc_round_pixclk(struct drm_encoder *encoder, unsigned long rate)
 
 /* initialize encoder */
 struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev,
-		struct drm_panel *panel)
+		struct device_node *panel_node)
 {
 	struct drm_encoder *encoder = NULL;
 	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder;
@@ -453,12 +450,12 @@ struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev,
 		goto fail;
 	}
 
-	mdp4_lcdc_encoder->panel = panel;
+	mdp4_lcdc_encoder->panel_node = panel_node;
 
 	encoder = &mdp4_lcdc_encoder->base;
 
 	drm_encoder_init(dev, encoder, &mdp4_lcdc_encoder_funcs,
-			 DRM_MODE_ENCODER_LVDS);
+			 DRM_MODE_ENCODER_LVDS, NULL);
 	drm_encoder_helper_add(encoder, &mdp4_lcdc_encoder_helper_funcs);
 
 	/* TODO: do we need different pll in other cases? */

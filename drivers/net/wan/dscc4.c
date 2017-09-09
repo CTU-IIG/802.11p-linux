@@ -95,7 +95,7 @@
 
 #include <asm/cache.h>
 #include <asm/byteorder.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 
@@ -551,7 +551,7 @@ static int dscc4_wait_ack_cec(struct dscc4_dev_priv *dpriv,
 			       msg, i);
 			goto done;
 		}
-		schedule_timeout_uninterruptible(10);
+		schedule_timeout_uninterruptible(msecs_to_jiffies(100));
 		rmb();
 	} while (++i > 0);
 	netdev_err(dev, "%s timeout\n", msg);
@@ -596,7 +596,7 @@ static inline int dscc4_xpr_ack(struct dscc4_dev_priv *dpriv)
 		    (dpriv->iqtx[cur] & cpu_to_le32(Xpr)))
 			break;
 		smp_rmb();
-		schedule_timeout_uninterruptible(10);
+		schedule_timeout_uninterruptible(msecs_to_jiffies(100));
 	} while (++i > 0);
 
 	return (i >= 0 ) ? i : -EAGAIN;
@@ -887,7 +887,6 @@ static inline int dscc4_set_quartz(struct dscc4_dev_priv *dpriv, int hz)
 static const struct net_device_ops dscc4_ops = {
 	.ndo_open       = dscc4_open,
 	.ndo_stop       = dscc4_close,
-	.ndo_change_mtu = hdlc_change_mtu,
 	.ndo_start_xmit = hdlc_start_xmit,
 	.ndo_do_ioctl   = dscc4_ioctl,
 	.ndo_tx_timeout = dscc4_tx_timeout,
@@ -1033,7 +1032,7 @@ static void dscc4_pci_reset(struct pci_dev *pdev, void __iomem *ioaddr)
 	/* Flush posted writes */
 	readl(ioaddr + GSTAR);
 
-	schedule_timeout_uninterruptible(10);
+	schedule_timeout_uninterruptible(msecs_to_jiffies(100));
 
 	for (i = 0; i < 16; i++)
 		pci_write_config_dword(pdev, i << 2, dscc4_pci_config_store[i]);
@@ -1046,7 +1045,6 @@ static void dscc4_pci_reset(struct pci_dev *pdev, void __iomem *ioaddr)
 static int dscc4_open(struct net_device *dev)
 {
 	struct dscc4_dev_priv *dpriv = dscc4_priv(dev);
-	struct dscc4_pci_priv *ppriv;
 	int ret = -EAGAIN;
 
 	if ((dscc4_loopback_check(dpriv) < 0))
@@ -1054,8 +1052,6 @@ static int dscc4_open(struct net_device *dev)
 
 	if ((ret = hdlc_open(dev)))
 		goto err;
-
-	ppriv = dpriv->pci_priv;
 
 	/*
 	 * Due to various bugs, there is no way to reliably reset a
@@ -1629,7 +1625,7 @@ try:
 		if (state & Xpr) {
 			void __iomem *scc_addr;
 			unsigned long ring;
-			int i;
+			unsigned int i;
 
 			/*
 			 * - the busy condition happens (sometimes);

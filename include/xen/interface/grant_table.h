@@ -181,7 +181,7 @@ struct grant_entry_header {
 };
 
 /*
- * Version 2 of the grant entry structure, here is an union because three
+ * Version 2 of the grant entry structure, here is a union because three
  * different types are suppotted: full_page, sub_page and transitive.
  */
 union grant_entry_v2 {
@@ -524,6 +524,13 @@ DEFINE_GUEST_HANDLE_STRUCT(gnttab_cache_flush);
   */
 #define _GNTMAP_contains_pte    (4)
 #define GNTMAP_contains_pte     (1<<_GNTMAP_contains_pte)
+
+/*
+ * Bits to be placed in guest kernel available PTE bits (architecture
+ * dependent; only supported when XENFEAT_gnttab_map_avail_bits is set).
+ */
+#define _GNTMAP_guest_avail0    (16)
+#define GNTMAP_guest_avail_mask ((uint32_t)~0 << _GNTMAP_guest_avail0)
 
 /*
  * Values for error status returns. All errors are -ve.

@@ -30,7 +30,7 @@
 #include <linux/export.h>
 #include <linux/sizes.h>
 
-#include <video/omapdss.h>
+#include <video/omapfb_dss.h>
 #include <video/omapvrfb.h>
 
 #include "omapfb.h"
@@ -137,8 +137,11 @@ static int omapfb_setup_plane(struct fb_info *fbi, struct omapfb_plane_info *pi)
 			goto undo;
 	}
 
-	if (ovl->manager)
-		ovl->manager->apply(ovl->manager);
+	if (ovl->manager) {
+		r = ovl->manager->apply(ovl->manager);
+		if (r)
+			goto undo;
+	}
 
 	if (pi->enabled) {
 		r = ovl->enable(ovl);

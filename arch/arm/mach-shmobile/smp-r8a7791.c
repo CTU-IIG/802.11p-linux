@@ -27,7 +27,7 @@
 
 static struct rcar_apmu_config r8a7791_apmu_config[] = {
 	{
-		.iomem = DEFINE_RES_MEM(0xe6152000, 0x88),
+		.iomem = DEFINE_RES_MEM(0xe6152000, 0x188),
 		.cpus = { 0, 1 },
 	}
 };
@@ -39,26 +39,14 @@ static void __init r8a7791_smp_prepare_cpus(unsigned int max_cpus)
 				       r8a7791_apmu_config,
 				       ARRAY_SIZE(r8a7791_apmu_config));
 
-	r8a7791_pm_init();
+	rcar_gen2_pm_init();
 }
 
-static int r8a7791_smp_boot_secondary(unsigned int cpu,
-				      struct task_struct *idle)
-{
-	/* Error out when hardware debug mode is enabled */
-	if (rcar_gen2_read_mode_pins() & BIT(21)) {
-		pr_warn("Unable to boot CPU%u when MD21 is set\n", cpu);
-		return -ENOTSUPP;
-	}
-
-	return shmobile_smp_apmu_boot_secondary(cpu, idle);
-}
-
-struct smp_operations r8a7791_smp_ops __initdata = {
+const struct smp_operations r8a7791_smp_ops __initconst = {
 	.smp_prepare_cpus	= r8a7791_smp_prepare_cpus,
-	.smp_boot_secondary	= r8a7791_smp_boot_secondary,
+	.smp_boot_secondary	= shmobile_smp_apmu_boot_secondary,
 #ifdef CONFIG_HOTPLUG_CPU
-	.cpu_disable		= shmobile_smp_cpu_disable,
+	.cpu_can_disable	= shmobile_smp_cpu_can_disable,
 	.cpu_die		= shmobile_smp_apmu_cpu_die,
 	.cpu_kill		= shmobile_smp_apmu_cpu_kill,
 #endif

@@ -1,38 +1,44 @@
 noarg:
 	$(MAKE) -C ../
 
-PROGS := count_instructions l3_bank_test per_event_excludes
-EXTRA_SOURCES := ../harness.c event.c lib.c
+TEST_GEN_PROGS := count_instructions l3_bank_test per_event_excludes
+EXTRA_SOURCES := ../harness.c event.c lib.c ../utils.c
 
-SUB_TARGETS = ebb
+include ../../lib.mk
 
-all: $(PROGS) $(SUB_TARGETS)
+all: $(TEST_GEN_PROGS) ebb
 
-$(PROGS): $(EXTRA_SOURCES)
+$(TEST_GEN_PROGS): $(EXTRA_SOURCES)
 
 # loop.S can only be built 64-bit
-count_instructions: loop.S count_instructions.c $(EXTRA_SOURCES)
+$(OUTPUT)/count_instructions: loop.S count_instructions.c $(EXTRA_SOURCES)
 	$(CC) $(CFLAGS) -m64 -o $@ $^
 
-run_tests: all sub_run_tests
-	@-for PROG in $(PROGS); do \
-		./$$PROG; \
-	done;
+$(OUTPUT)/per_event_excludes: ../utils.c
 
-clean: sub_clean
-	rm -f $(PROGS) loop.o
+DEFAULT_RUN_TESTS := $(RUN_TESTS)
+override define RUN_TESTS
+	$(DEFAULT_RUN_TESTS)
+	TARGET=ebb; BUILD_TARGET=$$OUTPUT/$$TARGET; $(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET run_tests
+endef
 
-$(SUB_TARGETS):
-	$(MAKE) -k -C $@ all
+DEFAULT_EMIT_TESTS := $(EMIT_TESTS)
+override define EMIT_TESTS
+	$(DEFAULT_EMIT_TESTS)
+	TARGET=ebb; BUILD_TARGET=$$OUTPUT/$$TARGET; $(MAKE) OUTPUT=$$BUILD_TARGET -s -C $$TARGET emit_tests
+endef
 
-sub_run_tests: all
-	@for TARGET in $(SUB_TARGETS); do \
-		$(MAKE) -C $$TARGET run_tests; \
-	done;
+DEFAULT_INSTALL_RULE := $(INSTALL_RULE)
+override define INSTALL_RULE
+	$(DEFAULT_INSTALL_RULE)
+	TARGET=ebb; BUILD_TARGET=$$OUTPUT/$$TARGET; $(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET install
+endef
 
-sub_clean:
-	@for TARGET in $(SUB_TARGETS); do \
-		$(MAKE) -C $$TARGET clean; \
-	done;
+clean:
+	$(RM) $(TEST_GEN_PROGS) $(OUTPUT)/loop.o
+	TARGET=ebb; BUILD_TARGET=$$OUTPUT/$$TARGET; $(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET clean
 
-.PHONY: all run_tests clean sub_run_tests sub_clean $(SUB_TARGETS)
+ebb:
+	TARGET=$@; BUILD_TARGET=$$OUTPUT/$$TARGET; mkdir -p $$BUILD_TARGET; $(MAKE) OUTPUT=$$BUILD_TARGET -k -C $$TARGET all
+
+.PHONY: all run_tests clean ebb

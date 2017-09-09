@@ -403,7 +403,8 @@ static const struct file_operations fops_antenna_diversity = {
 
 static int read_file_dma(struct seq_file *file, void *data)
 {
-	struct ath_softc *sc = file->private;
+	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+	struct ath_softc *sc = hw->priv;
 	struct ath_hw *ah = sc->sc_ah;
 	u32 val[ATH9K_NUM_DMA_DEBUG_REGS];
 	int i, qcuOffset = 0, dcuOffset = 0;
@@ -470,20 +471,6 @@ static int read_file_dma(struct seq_file *file, void *data)
 	return 0;
 }
 
-static int open_file_dma(struct inode *inode, struct file *f)
-{
-	return single_open(f, read_file_dma, inode->i_private);
-}
-
-static const struct file_operations fops_dma = {
-	.open = open_file_dma,
-	.read = seq_read,
-	.owner = THIS_MODULE,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-
 void ath_debug_stat_interrupt(struct ath_softc *sc, enum ath9k_int status)
 {
 	if (status)
@@ -539,7 +526,8 @@ void ath_debug_stat_interrupt(struct ath_softc *sc, enum ath9k_int status)
 
 static int read_file_interrupt(struct seq_file *file, void *data)
 {
-	struct ath_softc *sc = file->private;
+	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+	struct ath_softc *sc = hw->priv;
 
 #define PR_IS(a, s)						\
 	do {							\
@@ -600,22 +588,10 @@ static int read_file_interrupt(struct seq_file *file, void *data)
 	return 0;
 }
 
-static int open_file_interrupt(struct inode *inode, struct file *f)
-{
-	return single_open(f, read_file_interrupt, inode->i_private);
-}
-
-static const struct file_operations fops_interrupt = {
-	.read = seq_read,
-	.open = open_file_interrupt,
-	.owner = THIS_MODULE,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
 static int read_file_xmit(struct seq_file *file, void *data)
 {
-	struct ath_softc *sc = file->private;
+	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+	struct ath_softc *sc = hw->priv;
 
 	seq_printf(file, "%30s %10s%10s%10s\n\n", "BE", "BK", "VI", "VO");
 
@@ -624,7 +600,6 @@ static int read_file_xmit(struct seq_file *file, void *data)
 	PR("MPDUs XRetried:  ", xretries);
 	PR("Aggregates:      ", a_aggr);
 	PR("AMPDUs Queued HW:", a_queued_hw);
-	PR("AMPDUs Queued SW:", a_queued_sw);
 	PR("AMPDUs Completed:", a_completed);
 	PR("AMPDUs Retried:  ", a_retries);
 	PR("AMPDUs XRetried: ", a_xretries);
@@ -653,15 +628,15 @@ static void print_queue(struct ath_softc *sc, struct ath_txq *txq,
 	seq_printf(file, "%s: %d ", "qnum", txq->axq_qnum);
 	seq_printf(file, "%s: %2d ", "qdepth", txq->axq_depth);
 	seq_printf(file, "%s: %2d ", "ampdu-depth", txq->axq_ampdu_depth);
-	seq_printf(file, "%s: %3d ", "pending", txq->pending_frames);
-	seq_printf(file, "%s: %d\n", "stopped", txq->stopped);
+	seq_printf(file, "%s: %3d\n", "pending", txq->pending_frames);
 
 	ath_txq_unlock(sc, txq);
 }
 
 static int read_file_queues(struct seq_file *file, void *data)
 {
-	struct ath_softc *sc = file->private;
+	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+	struct ath_softc *sc = hw->priv;
 	struct ath_txq *txq;
 	int i;
 	static const char *qname[4] = {
@@ -682,7 +657,8 @@ static int read_file_queues(struct seq_file *file, void *data)
 
 static int read_file_misc(struct seq_file *file, void *data)
 {
-	struct ath_softc *sc = file->private;
+	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+	struct ath_softc *sc = hw->priv;
 	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
 	struct ath9k_vif_iter_data iter_data;
 	struct ath_chanctx *ctx;
@@ -763,8 +739,8 @@ static int read_file_misc(struct seq_file *file, void *data)
 			   i++, (int)(ctx->assigned), iter_data.naps,
 			   iter_data.nstations,
 			   iter_data.nmeshes, iter_data.nwds);
-		seq_printf(file, " ADHOC: %i TOTAL: %hi BEACON-VIF: %hi\n",
-			   iter_data.nadhocs, sc->cur_chan->nvifs,
+		seq_printf(file, " ADHOC: %i OCB: %i TOTAL: %hi BEACON-VIF: %hi\n",
+			   iter_data.nadhocs, iter_data.nocbs, sc->cur_chan->nvifs,
 			   sc->nbcnvifs);
 	}
 
@@ -773,7 +749,8 @@ static int read_file_misc(struct seq_file *file, void *data)
 
 static int read_file_reset(struct seq_file *file, void *data)
 {
-	struct ath_softc *sc = file->private;
+	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+	struct ath_softc *sc = hw->priv;
 	static const char * const reset_cause[__RESET_TYPE_MAX] = {
 		[RESET_TYPE_BB_HANG] = "Baseband Hang",
 		[RESET_TYPE_BB_WATCHDOG] = "Baseband Watchdog",
@@ -786,6 +763,8 @@ static int read_file_reset(struct seq_file *file, void *data)
 		[RESET_TYPE_BEACON_STUCK] = "Stuck Beacon",
 		[RESET_TYPE_MCI] = "MCI Reset",
 		[RESET_TYPE_CALIBRATION] = "Calibration error",
+		[RESET_TX_DMA_ERROR] = "Tx DMA stop error",
+		[RESET_RX_DMA_ERROR] = "Rx DMA stop error",
 	};
 	int i;
 
@@ -836,58 +815,6 @@ void ath_debug_stat_tx(struct ath_softc *sc, struct ath_buf *bf,
 	if (ts->ts_flags & ATH9K_TX_DELIM_UNDERRUN)
 		TX_STAT_INC(qnum, delim_underrun);
 }
-
-static int open_file_xmit(struct inode *inode, struct file *f)
-{
-	return single_open(f, read_file_xmit, inode->i_private);
-}
-
-static const struct file_operations fops_xmit = {
-	.read = seq_read,
-	.open = open_file_xmit,
-	.owner = THIS_MODULE,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-static int open_file_queues(struct inode *inode, struct file *f)
-{
-	return single_open(f, read_file_queues, inode->i_private);
-}
-
-static const struct file_operations fops_queues = {
-	.read = seq_read,
-	.open = open_file_queues,
-	.owner = THIS_MODULE,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-static int open_file_misc(struct inode *inode, struct file *f)
-{
-	return single_open(f, read_file_misc, inode->i_private);
-}
-
-static const struct file_operations fops_misc = {
-	.read = seq_read,
-	.open = open_file_misc,
-	.owner = THIS_MODULE,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-static int open_file_reset(struct inode *inode, struct file *f)
-{
-	return single_open(f, read_file_reset, inode->i_private);
-}
-
-static const struct file_operations fops_reset = {
-	.read = seq_read,
-	.open = open_file_reset,
-	.owner = THIS_MODULE,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
 
 void ath_debug_stat_rx(struct ath_softc *sc, struct ath_rx_status *rs)
 {
@@ -987,10 +914,21 @@ static int open_file_regdump(struct inode *inode, struct file *file)
 	struct ath_softc *sc = inode->i_private;
 	unsigned int len = 0;
 	u8 *buf;
-	int i;
+	int i, j = 0;
 	unsigned long num_regs, regdump_len, max_reg_offset;
+	const struct reg_hole {
+		u32 start;
+		u32 end;
+	} reg_hole_list[] = {
+		{0x0200, 0x07fc},
+		{0x0c00, 0x0ffc},
+		{0x2000, 0x3ffc},
+		{0x4100, 0x6ffc},
+		{0x705c, 0x7ffc},
+		{0x0000, 0x0000}
+	};
 
-	max_reg_offset = AR_SREV_9300_20_OR_LATER(sc->sc_ah) ? 0x16bd4 : 0xb500;
+	max_reg_offset = AR_SREV_9300_20_OR_LATER(sc->sc_ah) ? 0x8800 : 0xb500;
 	num_regs = max_reg_offset / 4 + 1;
 	regdump_len = num_regs * REGDUMP_LINE_SIZE + 1;
 	buf = vmalloc(regdump_len);
@@ -998,9 +936,16 @@ static int open_file_regdump(struct inode *inode, struct file *file)
 		return -ENOMEM;
 
 	ath9k_ps_wakeup(sc);
-	for (i = 0; i < num_regs; i++)
+	for (i = 0; i < num_regs; i++) {
+		if (reg_hole_list[j].start == i << 2) {
+			i = reg_hole_list[j].end >> 2;
+			j++;
+			continue;
+		}
+
 		len += scnprintf(buf + len, regdump_len - len,
 			"0x%06x 0x%08x\n", i << 2, REG_READ(sc->sc_ah, i << 2));
+	}
 	ath9k_ps_restore(sc);
 
 	file->private_data = buf;
@@ -1018,7 +963,8 @@ static const struct file_operations fops_regdump = {
 
 static int read_file_dump_nfcal(struct seq_file *file, void *data)
 {
-	struct ath_softc *sc = file->private;
+	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+	struct ath_softc *sc = hw->priv;
 	struct ath_hw *ah = sc->sc_ah;
 	struct ath9k_nfcal_hist *h = sc->cur_chan->caldata.nfCalHist;
 	struct ath_common *common = ath9k_hw_common(ah);
@@ -1115,6 +1061,195 @@ static const struct file_operations fops_ackto = {
 };
 #endif
 
+#ifdef CONFIG_ATH9K_WOW
+
+static ssize_t read_file_wow(struct file *file, char __user *user_buf,
+			     size_t count, loff_t *ppos)
+{
+	struct ath_softc *sc = file->private_data;
+	unsigned int len = 0, size = 32;
+	ssize_t retval;
+	char *buf;
+
+	buf = kzalloc(size, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	len += scnprintf(buf + len, size - len, "WOW: %s\n",
+			 sc->force_wow ? "ENABLED" : "DISABLED");
+
+	if (len > size)
+		len = size;
+
+	retval = simple_read_from_buffer(user_buf, count, ppos, buf, len);
+	kfree(buf);
+
+	return retval;
+}
+
+static ssize_t write_file_wow(struct file *file, const char __user *user_buf,
+			      size_t count, loff_t *ppos)
+{
+	struct ath_softc *sc = file->private_data;
+	unsigned long val;
+	char buf[32];
+	ssize_t len;
+
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	buf[len] = '\0';
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
+
+	if (val != 1)
+		return -EINVAL;
+
+	if (!sc->force_wow) {
+		sc->force_wow = true;
+		ath9k_init_wow(sc->hw);
+	}
+
+	return count;
+}
+
+static const struct file_operations fops_wow = {
+	.read = read_file_wow,
+	.write = write_file_wow,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
+#endif
+
+static ssize_t read_file_tpc(struct file *file, char __user *user_buf,
+			     size_t count, loff_t *ppos)
+{
+	struct ath_softc *sc = file->private_data;
+	struct ath_hw *ah = sc->sc_ah;
+	unsigned int len = 0, size = 32;
+	ssize_t retval;
+	char *buf;
+
+	buf = kzalloc(size, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	len += scnprintf(buf + len, size - len, "%s\n",
+			 ah->tpc_enabled ? "ENABLED" : "DISABLED");
+
+	if (len > size)
+		len = size;
+
+	retval = simple_read_from_buffer(user_buf, count, ppos, buf, len);
+	kfree(buf);
+
+	return retval;
+}
+
+static ssize_t write_file_tpc(struct file *file, const char __user *user_buf,
+			      size_t count, loff_t *ppos)
+{
+	struct ath_softc *sc = file->private_data;
+	struct ath_hw *ah = sc->sc_ah;
+	unsigned long val;
+	char buf[32];
+	ssize_t len;
+	bool tpc_enabled;
+
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	buf[len] = '\0';
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
+
+	if (val < 0 || val > 1)
+		return -EINVAL;
+
+	tpc_enabled = !!val;
+
+	if (tpc_enabled != ah->tpc_enabled) {
+		ah->tpc_enabled = tpc_enabled;
+
+		mutex_lock(&sc->mutex);
+		ath9k_set_txpower(sc, NULL);
+		mutex_unlock(&sc->mutex);
+	}
+
+	return count;
+}
+
+static const struct file_operations fops_tpc = {
+	.read = read_file_tpc,
+	.write = write_file_tpc,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
+static ssize_t read_file_nf_override(struct file *file,
+				     char __user *user_buf,
+				     size_t count, loff_t *ppos)
+{
+	struct ath_softc *sc = file->private_data;
+	struct ath_hw *ah = sc->sc_ah;
+	char buf[32];
+	unsigned int len;
+
+	if (ah->nf_override == 0)
+		len = sprintf(buf, "off\n");
+	else
+		len = sprintf(buf, "%d\n", ah->nf_override);
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+static ssize_t write_file_nf_override(struct file *file,
+				      const char __user *user_buf,
+				      size_t count, loff_t *ppos)
+{
+	struct ath_softc *sc = file->private_data;
+	struct ath_hw *ah = sc->sc_ah;
+	long val;
+	char buf[32];
+	ssize_t len;
+
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	buf[len] = '\0';
+	if (strncmp("off", buf, 3) == 0)
+		val = 0;
+	else if (kstrtol(buf, 0, &val))
+		return -EINVAL;
+
+	if (val > 0)
+		return -EINVAL;
+
+	if (val < -120)
+		return -EINVAL;
+
+	ah->nf_override = val;
+
+	if (ah->curchan)
+		ath9k_hw_loadnf(ah, ah->curchan);
+
+	return count;
+}
+
+static const struct file_operations fops_nf_override = {
+	.read = read_file_nf_override,
+	.write = write_file_nf_override,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
 /* Ethtool support for get-stats */
 
 #define AMKSTR(nm) #nm "_BE", #nm "_BK", #nm "_VI", #nm "_VO"
@@ -1130,7 +1265,6 @@ static const char ath9k_gstrings_stats[][ETH_GSTRING_LEN] = {
 	AMKSTR(d_tx_mpdu_xretries),
 	AMKSTR(d_tx_aggregates),
 	AMKSTR(d_tx_ampdus_queued_hw),
-	AMKSTR(d_tx_ampdus_queued_sw),
 	AMKSTR(d_tx_ampdus_completed),
 	AMKSTR(d_tx_ampdu_retries),
 	AMKSTR(d_tx_ampdu_xretries),
@@ -1210,7 +1344,6 @@ void ath9k_get_et_stats(struct ieee80211_hw *hw,
 	AWDATA(xretries);
 	AWDATA(a_aggr);
 	AWDATA(a_queued_hw);
-	AWDATA(a_queued_sw);
 	AWDATA(a_completed);
 	AWDATA(a_retries);
 	AWDATA(a_xretries);
@@ -1260,26 +1393,18 @@ int ath9k_init_debug(struct ath_hw *ah)
 	ath9k_tx99_init_debug(sc);
 	ath9k_cmn_spectral_init_debug(&sc->spec_priv, sc->debug.debugfs_phy);
 
-	debugfs_create_file("dma", S_IRUSR, sc->debug.debugfs_phy, sc,
-			    &fops_dma);
-	debugfs_create_file("interrupt", S_IRUSR, sc->debug.debugfs_phy, sc,
-			    &fops_interrupt);
-	debugfs_create_file("xmit", S_IRUSR, sc->debug.debugfs_phy, sc,
-			    &fops_xmit);
-	debugfs_create_file("queues", S_IRUSR, sc->debug.debugfs_phy, sc,
-			    &fops_queues);
-	debugfs_create_u32("qlen_bk", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
-			   &sc->tx.txq_max_pending[IEEE80211_AC_BK]);
-	debugfs_create_u32("qlen_be", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
-			   &sc->tx.txq_max_pending[IEEE80211_AC_BE]);
-	debugfs_create_u32("qlen_vi", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
-			   &sc->tx.txq_max_pending[IEEE80211_AC_VI]);
-	debugfs_create_u32("qlen_vo", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
-			   &sc->tx.txq_max_pending[IEEE80211_AC_VO]);
-	debugfs_create_file("misc", S_IRUSR, sc->debug.debugfs_phy, sc,
-			    &fops_misc);
-	debugfs_create_file("reset", S_IRUSR, sc->debug.debugfs_phy, sc,
-			    &fops_reset);
+	debugfs_create_devm_seqfile(sc->dev, "dma", sc->debug.debugfs_phy,
+				    read_file_dma);
+	debugfs_create_devm_seqfile(sc->dev, "interrupt", sc->debug.debugfs_phy,
+				    read_file_interrupt);
+	debugfs_create_devm_seqfile(sc->dev, "xmit", sc->debug.debugfs_phy,
+				    read_file_xmit);
+	debugfs_create_devm_seqfile(sc->dev, "queues", sc->debug.debugfs_phy,
+				    read_file_queues);
+	debugfs_create_devm_seqfile(sc->dev, "misc", sc->debug.debugfs_phy,
+				    read_file_misc);
+	debugfs_create_devm_seqfile(sc->dev, "reset", sc->debug.debugfs_phy,
+				    read_file_reset);
 
 	ath9k_cmn_debug_recv(sc->debug.debugfs_phy, &sc->debug.stats.rxstats);
 	ath9k_cmn_debug_phy_err(sc->debug.debugfs_phy, &sc->debug.stats.rxstats);
@@ -1301,8 +1426,9 @@ int ath9k_init_debug(struct ath_hw *ah)
 			    &ah->config.cwm_ignore_extcca);
 	debugfs_create_file("regdump", S_IRUSR, sc->debug.debugfs_phy, sc,
 			    &fops_regdump);
-	debugfs_create_file("dump_nfcal", S_IRUSR, sc->debug.debugfs_phy, sc,
-			    &fops_dump_nfcal);
+	debugfs_create_devm_seqfile(sc->dev, "dump_nfcal",
+				    sc->debug.debugfs_phy,
+				    read_file_dump_nfcal);
 
 	ath9k_cmn_debug_base_eeprom(sc->debug.debugfs_phy, sc->sc_ah);
 	ath9k_cmn_debug_modal_eeprom(sc->debug.debugfs_phy, sc->sc_ah);
@@ -1320,10 +1446,23 @@ int ath9k_init_debug(struct ath_hw *ah)
 			    &fops_btcoex);
 #endif
 
+#ifdef CONFIG_ATH9K_WOW
+	debugfs_create_file("wow", S_IRUSR | S_IWUSR,
+			    sc->debug.debugfs_phy, sc, &fops_wow);
+#endif
+
 #ifdef CONFIG_ATH9K_DYNACK
 	debugfs_create_file("ack_to", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
 			    sc, &fops_ackto);
 #endif
+	debugfs_create_file("tpc", S_IRUSR | S_IWUSR,
+			    sc->debug.debugfs_phy, sc, &fops_tpc);
+
+	debugfs_create_u16("airtime_flags", S_IRUSR | S_IWUSR,
+			   sc->debug.debugfs_phy, &sc->airtime_flags);
+
+	debugfs_create_file("nf_override", S_IRUSR | S_IWUSR,
+			    sc->debug.debugfs_phy, sc, &fops_nf_override);
 
 	return 0;
 }

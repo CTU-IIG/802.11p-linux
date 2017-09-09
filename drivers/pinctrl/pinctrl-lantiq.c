@@ -6,7 +6,7 @@
  *  it under the terms of the GNU General Public License version 2 as
  *  publishhed by the Free Software Foundation.
  *
- *  Copyright (C) 2012 John Crispin <blogic@openwrt.org>
+ *  Copyright (C) 2012 John Crispin <john@phrozen.org>
  */
 
 #include <linux/module.h>
@@ -336,10 +336,10 @@ int ltq_pinctrl_register(struct platform_device *pdev,
 	desc->pmxops = &ltq_pmx_ops;
 	info->dev = &pdev->dev;
 
-	info->pctrl = pinctrl_register(desc, &pdev->dev, info);
-	if (!info->pctrl) {
+	info->pctrl = devm_pinctrl_register(&pdev->dev, desc, info);
+	if (IS_ERR(info->pctrl)) {
 		dev_err(&pdev->dev, "failed to register LTQ pinmux driver\n");
-		return -EINVAL;
+		return PTR_ERR(info->pctrl);
 	}
 	platform_set_drvdata(pdev, info);
 	return 0;

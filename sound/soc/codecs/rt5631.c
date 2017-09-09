@@ -174,16 +174,15 @@ static const DECLARE_TLV_DB_SCALE(out_vol_tlv, -4650, 150, 0);
 static const DECLARE_TLV_DB_SCALE(dac_vol_tlv, -95625, 375, 0);
 static const DECLARE_TLV_DB_SCALE(in_vol_tlv, -3450, 150, 0);
 /* {0, +20, +24, +30, +35, +40, +44, +50, +52}dB */
-static unsigned int mic_bst_tlv[] = {
-	TLV_DB_RANGE_HEAD(7),
+static const DECLARE_TLV_DB_RANGE(mic_bst_tlv,
 	0, 0, TLV_DB_SCALE_ITEM(0, 0, 0),
 	1, 1, TLV_DB_SCALE_ITEM(2000, 0, 0),
 	2, 2, TLV_DB_SCALE_ITEM(2400, 0, 0),
 	3, 5, TLV_DB_SCALE_ITEM(3000, 500, 0),
 	6, 6, TLV_DB_SCALE_ITEM(4400, 0, 0),
 	7, 7, TLV_DB_SCALE_ITEM(5000, 0, 0),
-	8, 8, TLV_DB_SCALE_ITEM(5200, 0, 0),
-};
+	8, 8, TLV_DB_SCALE_ITEM(5200, 0, 0)
+);
 
 static int rt5631_dmic_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
@@ -287,70 +286,78 @@ static const struct snd_kcontrol_new rt5631_snd_controls[] = {
 static int check_sysclk1_source(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
 	unsigned int reg;
 
-	reg = snd_soc_read(source->codec, RT5631_GLOBAL_CLK_CTRL);
+	reg = snd_soc_read(codec, RT5631_GLOBAL_CLK_CTRL);
 	return reg & RT5631_SYSCLK_SOUR_SEL_PLL;
 }
 
 static int check_dmic_used(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
-	struct rt5631_priv *rt5631 = snd_soc_codec_get_drvdata(source->codec);
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
+	struct rt5631_priv *rt5631 = snd_soc_codec_get_drvdata(codec);
 	return rt5631->dmic_used_flag;
 }
 
 static int check_dacl_to_outmixl(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
 	unsigned int reg;
 
-	reg = snd_soc_read(source->codec, RT5631_OUTMIXER_L_CTRL);
+	reg = snd_soc_read(codec, RT5631_OUTMIXER_L_CTRL);
 	return !(reg & RT5631_M_DAC_L_TO_OUTMIXER_L);
 }
 
 static int check_dacr_to_outmixr(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
 	unsigned int reg;
 
-	reg = snd_soc_read(source->codec, RT5631_OUTMIXER_R_CTRL);
+	reg = snd_soc_read(codec, RT5631_OUTMIXER_R_CTRL);
 	return !(reg & RT5631_M_DAC_R_TO_OUTMIXER_R);
 }
 
 static int check_dacl_to_spkmixl(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
 	unsigned int reg;
 
-	reg = snd_soc_read(source->codec, RT5631_SPK_MIXER_CTRL);
+	reg = snd_soc_read(codec, RT5631_SPK_MIXER_CTRL);
 	return !(reg & RT5631_M_DAC_L_TO_SPKMIXER_L);
 }
 
 static int check_dacr_to_spkmixr(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
 	unsigned int reg;
 
-	reg = snd_soc_read(source->codec, RT5631_SPK_MIXER_CTRL);
+	reg = snd_soc_read(codec, RT5631_SPK_MIXER_CTRL);
 	return !(reg & RT5631_M_DAC_R_TO_SPKMIXER_R);
 }
 
 static int check_adcl_select(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
 	unsigned int reg;
 
-	reg = snd_soc_read(source->codec, RT5631_ADC_REC_MIXER);
+	reg = snd_soc_read(codec, RT5631_ADC_REC_MIXER);
 	return !(reg & RT5631_M_MIC1_TO_RECMIXER_L);
 }
 
 static int check_adcr_select(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
 {
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(source->dapm);
 	unsigned int reg;
 
-	reg = snd_soc_read(source->codec, RT5631_ADC_REC_MIXER);
+	reg = snd_soc_read(codec, RT5631_ADC_REC_MIXER);
 	return !(reg & RT5631_M_MIC2_TO_RECMIXER_R);
 }
 
@@ -556,7 +563,7 @@ static void depop_seq_mute_stage(struct snd_soc_codec *codec, int enable)
 static int hp_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = w->codec;
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
 	struct rt5631_priv *rt5631 = snd_soc_codec_get_drvdata(codec);
 
 	switch (event) {
@@ -590,7 +597,7 @@ static int hp_event(struct snd_soc_dapm_widget *w,
 static int set_dmic_params(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = w->codec;
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
 	struct rt5631_priv *rt5631 = snd_soc_codec_get_drvdata(codec);
 
 	switch (rt5631->rx_rate) {
@@ -1538,7 +1545,7 @@ static int rt5631_set_bias_level(struct snd_soc_codec *codec,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
+		if (snd_soc_codec_get_bias_level(codec) == SND_SOC_BIAS_OFF) {
 			snd_soc_update_bits(codec, RT5631_PWR_MANAG_ADD3,
 				RT5631_PWR_VREF | RT5631_PWR_MAIN_BIAS,
 				RT5631_PWR_VREF | RT5631_PWR_MAIN_BIAS);
@@ -1561,7 +1568,6 @@ static int rt5631_set_bias_level(struct snd_soc_codec *codec,
 	default:
 		break;
 	}
-	codec->dapm.bias_level = level;
 
 	return 0;
 }
@@ -1607,7 +1613,7 @@ static int rt5631_probe(struct snd_soc_codec *codec)
 			RT5631_DMIC_R_CH_LATCH_RISING);
 	}
 
-	codec->dapm.bias_level = SND_SOC_BIAS_STANDBY;
+	snd_soc_codec_init_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
 	return 0;
 }
@@ -1651,12 +1657,14 @@ static struct snd_soc_codec_driver soc_codec_dev_rt5631 = {
 	.probe = rt5631_probe,
 	.set_bias_level = rt5631_set_bias_level,
 	.suspend_bias_off = true,
-	.controls = rt5631_snd_controls,
-	.num_controls = ARRAY_SIZE(rt5631_snd_controls),
-	.dapm_widgets = rt5631_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(rt5631_dapm_widgets),
-	.dapm_routes = rt5631_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(rt5631_dapm_routes),
+	.component_driver = {
+		.controls		= rt5631_snd_controls,
+		.num_controls		= ARRAY_SIZE(rt5631_snd_controls),
+		.dapm_widgets		= rt5631_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(rt5631_dapm_widgets),
+		.dapm_routes		= rt5631_dapm_routes,
+		.num_dapm_routes	= ARRAY_SIZE(rt5631_dapm_routes),
+	},
 };
 
 static const struct i2c_device_id rt5631_i2c_id[] = {
@@ -1667,7 +1675,7 @@ static const struct i2c_device_id rt5631_i2c_id[] = {
 MODULE_DEVICE_TABLE(i2c, rt5631_i2c_id);
 
 #ifdef CONFIG_OF
-static struct of_device_id rt5631_i2c_dt_ids[] = {
+static const struct of_device_id rt5631_i2c_dt_ids[] = {
 	{ .compatible = "realtek,rt5631"},
 	{ .compatible = "realtek,alc5631"},
 	{ }
@@ -1718,7 +1726,6 @@ static int rt5631_i2c_remove(struct i2c_client *client)
 static struct i2c_driver rt5631_i2c_driver = {
 	.driver = {
 		.name = "rt5631",
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(rt5631_i2c_dt_ids),
 	},
 	.probe = rt5631_i2c_probe,

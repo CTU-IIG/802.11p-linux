@@ -164,7 +164,7 @@ static struct snd_soc_ops spitz_ops = {
 static int spitz_get_jack(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.integer.value[0] = spitz_jack_func;
+	ucontrol->value.enumerated.item[0] = spitz_jack_func;
 	return 0;
 }
 
@@ -173,10 +173,10 @@ static int spitz_set_jack(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
 
-	if (spitz_jack_func == ucontrol->value.integer.value[0])
+	if (spitz_jack_func == ucontrol->value.enumerated.item[0])
 		return 0;
 
-	spitz_jack_func = ucontrol->value.integer.value[0];
+	spitz_jack_func = ucontrol->value.enumerated.item[0];
 	spitz_ext_control(&card->dapm);
 	return 1;
 }
@@ -184,7 +184,7 @@ static int spitz_set_jack(struct snd_kcontrol *kcontrol,
 static int spitz_get_spk(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.integer.value[0] = spitz_spk_func;
+	ucontrol->value.enumerated.item[0] = spitz_spk_func;
 	return 0;
 }
 
@@ -193,10 +193,10 @@ static int spitz_set_spk(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
 
-	if (spitz_spk_func == ucontrol->value.integer.value[0])
+	if (spitz_spk_func == ucontrol->value.enumerated.item[0])
 		return 0;
 
-	spitz_spk_func = ucontrol->value.integer.value[0];
+	spitz_spk_func = ucontrol->value.enumerated.item[0];
 	spitz_ext_control(&card->dapm);
 	return 1;
 }
@@ -241,9 +241,9 @@ static const struct snd_soc_dapm_route spitz_audio_map[] = {
 	{"LINPUT1", NULL, "Line Jack"},
 };
 
-static const char *jack_function[] = {"Headphone", "Mic", "Line", "Headset",
-	"Off"};
-static const char *spk_function[] = {"On", "Off"};
+static const char * const jack_function[] = {"Headphone", "Mic", "Line",
+	"Headset", "Off"};
+static const char * const spk_function[] = {"On", "Off"};
 static const struct soc_enum spitz_enum[] = {
 	SOC_ENUM_SINGLE_EXT(5, jack_function),
 	SOC_ENUM_SINGLE_EXT(2, spk_function),
@@ -256,26 +256,6 @@ static const struct snd_kcontrol_new wm8750_spitz_controls[] = {
 		spitz_set_spk),
 };
 
-/*
- * Logic for a wm8750 as connected on a Sharp SL-Cxx00 Device
- */
-static int spitz_wm8750_init(struct snd_soc_pcm_runtime *rtd)
-{
-	struct snd_soc_codec *codec = rtd->codec;
-	struct snd_soc_dapm_context *dapm = &codec->dapm;
-
-	/* NC codec pins */
-	snd_soc_dapm_nc_pin(dapm, "RINPUT1");
-	snd_soc_dapm_nc_pin(dapm, "LINPUT2");
-	snd_soc_dapm_nc_pin(dapm, "RINPUT2");
-	snd_soc_dapm_nc_pin(dapm, "LINPUT3");
-	snd_soc_dapm_nc_pin(dapm, "RINPUT3");
-	snd_soc_dapm_nc_pin(dapm, "OUT3");
-	snd_soc_dapm_nc_pin(dapm, "MONO1");
-
-	return 0;
-}
-
 /* spitz digital audio interface glue - connects codec <--> CPU */
 static struct snd_soc_dai_link spitz_dai = {
 	.name = "wm8750",
@@ -284,7 +264,6 @@ static struct snd_soc_dai_link spitz_dai = {
 	.codec_dai_name = "wm8750-hifi",
 	.platform_name = "pxa-pcm-audio",
 	.codec_name = "wm8750.0-001b",
-	.init = spitz_wm8750_init,
 	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 		   SND_SOC_DAIFMT_CBS_CFS,
 	.ops = &spitz_ops,
@@ -303,6 +282,7 @@ static struct snd_soc_card snd_soc_spitz = {
 	.num_dapm_widgets = ARRAY_SIZE(wm8750_dapm_widgets),
 	.dapm_routes = spitz_audio_map,
 	.num_dapm_routes = ARRAY_SIZE(spitz_audio_map),
+	.fully_routed = true,
 };
 
 static int spitz_probe(struct platform_device *pdev)
@@ -325,7 +305,7 @@ static int spitz_probe(struct platform_device *pdev)
 
 	card->dev = &pdev->dev;
 
-	ret = snd_soc_register_card(card);
+	ret = devm_snd_soc_register_card(&pdev->dev, card);
 	if (ret) {
 		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n",
 			ret);
@@ -342,9 +322,6 @@ err1:
 
 static int spitz_remove(struct platform_device *pdev)
 {
-	struct snd_soc_card *card = platform_get_drvdata(pdev);
-
-	snd_soc_unregister_card(card);
 	gpio_free(spitz_mic_gpio);
 	return 0;
 }
@@ -352,7 +329,6 @@ static int spitz_remove(struct platform_device *pdev)
 static struct platform_driver spitz_driver = {
 	.driver		= {
 		.name	= "spitz-audio",
-		.owner	= THIS_MODULE,
 		.pm     = &snd_soc_pm_ops,
 	},
 	.probe		= spitz_probe,

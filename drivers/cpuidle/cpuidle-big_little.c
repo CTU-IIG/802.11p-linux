@@ -108,13 +108,7 @@ static int notrace bl_powerdown_finisher(unsigned long arg)
 	unsigned int cpu = MPIDR_AFFINITY_LEVEL(mpidr, 0);
 
 	mcpm_set_entry_vector(cpu, cluster, cpu_resume);
-
-	/*
-	 * Residency value passed to mcpm_cpu_suspend back-end
-	 * has to be given clear semantics. Set to 0 as a
-	 * temporary value.
-	 */
-	mcpm_cpu_suspend(0);
+	mcpm_cpu_suspend();
 
 	/* return value != 0 means failure */
 	return 1;
@@ -182,6 +176,10 @@ static int __init bl_idle_init(void)
 	 */
 	if (!of_match_node(compatible_machine_match, root))
 		return -ENODEV;
+
+	if (!mcpm_is_available())
+		return -EUNATCH;
+
 	/*
 	 * For now the differentiation between little and big cores
 	 * is based on the part number. A7 cores are considered little

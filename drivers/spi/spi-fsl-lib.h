@@ -23,14 +23,11 @@
 /* SPI/eSPI Controller driver's private data. */
 struct mpc8xxx_spi {
 	struct device *dev;
-	void *reg_base;
+	void __iomem *reg_base;
 
 	/* rx & tx bufs from the spi_transfer */
 	const void *tx;
 	void *rx;
-#ifdef CONFIG_SPI_FSL_ESPI
-	int len;
-#endif
 
 	int subblock;
 	struct spi_pram __iomem *pram;
@@ -54,9 +51,6 @@ struct mpc8xxx_spi {
 	void (*get_rx) (u32 rx_data, struct mpc8xxx_spi *);
 	u32(*get_tx) (struct mpc8xxx_spi *);
 
-	/* hooks for different controller driver */
-	void (*spi_remove) (struct mpc8xxx_spi *mspi);
-
 	unsigned int count;
 	unsigned int irq;
 
@@ -68,7 +62,7 @@ struct mpc8xxx_spi {
 
 	unsigned int flags;
 
-#ifdef CONFIG_SPI_FSL_SPI
+#if IS_ENABLED(CONFIG_SPI_FSL_SPI)
 	int type;
 	int native_chipselects;
 	u8 max_bits_per_word;

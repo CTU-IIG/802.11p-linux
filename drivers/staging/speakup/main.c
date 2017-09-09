@@ -16,11 +16,7 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-*/
+ */
 
 #include <linux/kernel.h>
 #include <linux/vt.h>
@@ -62,8 +58,8 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION(SPEAKUP_VERSION);
 
 char *synth_name;
-module_param_named(synth, synth_name, charp, S_IRUGO);
-module_param_named(quiet, spk_quiet_boot, bool, S_IRUGO);
+module_param_named(synth, synth_name, charp, 0444);
+module_param_named(quiet, spk_quiet_boot, bool, 0444);
 
 MODULE_PARM_DESC(synth, "Synth to start if speakup is built in.");
 MODULE_PARM_DESC(quiet, "Do not announce when the synthesizer is found.");
@@ -128,7 +124,8 @@ static char *phonetic[] = {
 
 /* array of 256 char pointers (one for each character description)
  * initialized to default_chars and user selectable via
- * /proc/speakup/characters */
+ * /proc/speakup/characters
+ */
 char *spk_characters[256];
 
 char *spk_default_chars[256] = {
@@ -194,7 +191,8 @@ char *spk_default_chars[256] = {
 
 /* array of 256 u_short (one for each character)
  * initialized to default_chartab and user selectable via
- * /sys/module/speakup/parameters/chartab */
+ * /sys/module/speakup/parameters/chartab
+ */
 u_short spk_chartab[256];
 
 static u_short default_chartab[256] = {
@@ -262,9 +260,10 @@ static struct notifier_block vt_notifier_block = {
 	.notifier_call = vt_notifier_call,
 };
 
-static unsigned char get_attributes(u16 *pos)
+static unsigned char get_attributes(struct vc_data *vc, u16 *pos)
 {
-	return (u_char) (scr_readw(pos) >> 8);
+	pos = screen_pos(vc, pos - (u16 *)vc->vc_origin, 1);
+	return (scr_readw(pos) & ~vc->vc_hi_font_mask) >> 8;
 }
 
 static void speakup_date(struct vc_data *vc)
@@ -273,7 +272,7 @@ static void speakup_date(struct vc_data *vc)
 	spk_y = spk_cy = vc->vc_y;
 	spk_pos = spk_cp = vc->vc_pos;
 	spk_old_attr = spk_attr;
-	spk_attr = get_attributes((u_short *) spk_pos);
+	spk_attr = get_attributes(vc, (u_short *)spk_pos);
 }
 
 static void bleep(u_short val)
@@ -352,14 +351,14 @@ static void speakup_cut(struct vc_data *vc)
 
 	if (!mark_cut_flag) {
 		mark_cut_flag = 1;
-		spk_xs = (u_short) spk_x;
-		spk_ys = (u_short) spk_y;
+		spk_xs = (u_short)spk_x;
+		spk_ys = (u_short)spk_y;
 		spk_sel_cons = vc;
 		synth_printf("%s\n", spk_msg_get(MSG_MARK));
 		return;
 	}
-	spk_xe = (u_short) spk_x;
-	spk_ye = (u_short) spk_y;
+	spk_xe = (u_short)spk_x;
+	spk_ye = (u_short)spk_y;
 	mark_cut_flag = 0;
 	synth_printf("%s\n", spk_msg_get(MSG_CUT));
 
@@ -423,7 +422,8 @@ static void announce_edge(struct vc_data *vc, int msg_id)
 	if (spk_bleeps & 1)
 		bleep(spk_y);
 	if ((spk_bleeps & 2) && (msg_id < edge_quiet))
-		synth_printf("%s\n", spk_msg_get(MSG_EDGE_MSGS_START + msg_id - 1));
+		synth_printf("%s\n",
+			spk_msg_get(MSG_EDGE_MSGS_START + msg_id - 1));
 }
 
 static void speak_char(u_char ch)
@@ -466,11 +466,17 @@ static u16 get_char(struct vc_data *vc, u16 *pos, u_char *attribs)
 	u16 ch = ' ';
 
 	if (vc && pos) {
-		u16 w = scr_readw(pos);
-		u16 c = w & 0xff;
+		u16 w;
+		u16 c;
 
-		if (w & vc->vc_hi_font_mask)
+		pos = screen_pos(vc, pos - (u16 *)vc->vc_origin, 1);
+		w = scr_readw(pos);
+		c = w & 0xff;
+
+		if (w & vc->vc_hi_font_mask) {
+			w &= ~vc->vc_hi_font_mask;
 			c |= 0x100;
+		}
 
 		ch = inverse_translate(vc, c, 0);
 		*attribs = (w & 0xff00) >> 8;
@@ -483,7 +489,7 @@ static void say_char(struct vc_data *vc)
 	u_short ch;
 
 	spk_old_attr = spk_attr;
-	ch = get_char(vc, (u_short *) spk_pos, &spk_attr);
+	ch = get_char(vc, (u_short *)spk_pos, &spk_attr);
 	if (spk_attr != spk_old_attr) {
 		if (spk_attrib_bleep & 1)
 			bleep(spk_y);
@@ -498,7 +504,7 @@ static void say_phonetic_char(struct vc_data *vc)
 	u_short ch;
 
 	spk_old_attr = spk_attr;
-	ch = get_char(vc, (u_short *) spk_pos, &spk_attr);
+	ch = get_char(vc, (u_short *)spk_pos, &spk_attr);
 	if (isascii(ch) && isalpha(ch)) {
 		ch &= 0x1f;
 		synth_printf("%s\n", phonetic[--ch]);
@@ -539,7 +545,8 @@ static void say_next_char(struct vc_data *vc)
  * see if there is a word starting on the next position to the right
  * and return that word if it exists.  If it does not exist it will
  * move left to the beginning of any previous word on the line or the
- * beginning off the line whichever comes first.. */
+ * beginning off the line whichever comes first..
+ */
 
 static u_long get_word(struct vc_data *vc)
 {
@@ -549,7 +556,7 @@ static u_long get_word(struct vc_data *vc)
 	u_char temp;
 
 	spk_old_attr = spk_attr;
-	ch = (char)get_char(vc, (u_short *) tmp_pos, &temp);
+	ch = (char)get_char(vc, (u_short *)tmp_pos, &temp);
 
 /* decided to take out the sayword if on a space (mis-information */
 	if (spk_say_word_ctl && ch == SPACE) {
@@ -558,26 +565,26 @@ static u_long get_word(struct vc_data *vc)
 		return 0;
 	} else if ((tmpx < vc->vc_cols - 2)
 		   && (ch == SPACE || ch == 0 || IS_WDLM(ch))
-		   && ((char)get_char(vc, (u_short *) &tmp_pos + 1, &temp) >
+		   && ((char)get_char(vc, (u_short *)&tmp_pos + 1, &temp) >
 		       SPACE)) {
 		tmp_pos += 2;
 		tmpx++;
 	} else
 		while (tmpx > 0) {
-			ch = (char)get_char(vc, (u_short *) tmp_pos - 1, &temp);
+			ch = (char)get_char(vc, (u_short *)tmp_pos - 1, &temp);
 			if ((ch == SPACE || ch == 0 || IS_WDLM(ch))
-			    && ((char)get_char(vc, (u_short *) tmp_pos, &temp) >
+			    && ((char)get_char(vc, (u_short *)tmp_pos, &temp) >
 				SPACE))
 				break;
 			tmp_pos -= 2;
 			tmpx--;
 		}
-	attr_ch = get_char(vc, (u_short *) tmp_pos, &spk_attr);
+	attr_ch = get_char(vc, (u_short *)tmp_pos, &spk_attr);
 	buf[cnt++] = attr_ch & 0xff;
 	while (tmpx < vc->vc_cols - 1) {
 		tmp_pos += 2;
 		tmpx++;
-		ch = (char)get_char(vc, (u_short *) tmp_pos, &temp);
+		ch = (char)get_char(vc, (u_short *)tmp_pos, &temp);
 		if ((ch == SPACE) || ch == 0
 		    || (IS_WDLM(buf[cnt - 1]) && (ch > SPACE)))
 			break;
@@ -632,7 +639,7 @@ static void say_prev_word(struct vc_data *vc)
 		} else
 			spk_x--;
 		spk_pos -= 2;
-		ch = (char)get_char(vc, (u_short *) spk_pos, &temp);
+		ch = (char)get_char(vc, (u_short *)spk_pos, &temp);
 		if (ch == SPACE || ch == 0)
 			state = 0;
 		else if (IS_WDLM(ch))
@@ -665,7 +672,7 @@ static void say_next_word(struct vc_data *vc)
 		return;
 	}
 	while (1) {
-		ch = (char)get_char(vc, (u_short *) spk_pos, &temp);
+		ch = (char)get_char(vc, (u_short *)spk_pos, &temp);
 		if (ch == SPACE || ch == 0)
 			state = 0;
 		else if (IS_WDLM(ch))
@@ -702,7 +709,7 @@ static void spell_word(struct vc_data *vc)
 
 	if (!get_word(vc))
 		return;
-	while ((ch = (u_char) *cp)) {
+	while ((ch = (u_char)*cp)) {
 		if (cp != buf)
 			synth_printf(" %s ", delay_str[spk_spell_delay]);
 		if (IS_CHAR(ch, B_CAP)) {
@@ -742,9 +749,9 @@ static int get_line(struct vc_data *vc)
 	u_char tmp2;
 
 	spk_old_attr = spk_attr;
-	spk_attr = get_attributes((u_short *) spk_pos);
+	spk_attr = get_attributes(vc, (u_short *)spk_pos);
 	for (i = 0; i < vc->vc_cols; i++) {
-		buf[i] = (u_char) get_char(vc, (u_short *) tmp, &tmp2);
+		buf[i] = (u_char)get_char(vc, (u_short *)tmp, &tmp2);
 		tmp += 2;
 	}
 	for (--i; i >= 0; i--)
@@ -807,9 +814,9 @@ static int say_from_to(struct vc_data *vc, u_long from, u_long to,
 	u_short saved_punc_mask = spk_punc_mask;
 
 	spk_old_attr = spk_attr;
-	spk_attr = get_attributes((u_short *) from);
+	spk_attr = get_attributes(vc, (u_short *)from);
 	while (from < to) {
-		buf[i++] = (char)get_char(vc, (u_short *) from, &tmp);
+		buf[i++] = (char)get_char(vc, (u_short *)from, &tmp);
 		from += 2;
 		if (i >= vc->vc_size_row)
 			break;
@@ -882,10 +889,10 @@ static int get_sentence_buf(struct vc_data *vc, int read_punc)
 	sentmarks[bn][0] = &sentbuf[bn][0];
 	i = 0;
 	spk_old_attr = spk_attr;
-	spk_attr = get_attributes((u_short *) start);
+	spk_attr = get_attributes(vc, (u_short *)start);
 
 	while (start < end) {
-		sentbuf[bn][i] = (char)get_char(vc, (u_short *) start, &tmp);
+		sentbuf[bn][i] = (char)get_char(vc, (u_short *)start, &tmp);
 		if (i > 0) {
 			if (sentbuf[bn][i] == SPACE && sentbuf[bn][i - 1] == '.'
 			    && numsentences[bn] < 9) {
@@ -1033,7 +1040,7 @@ static void say_position(struct vc_data *vc)
 static void say_char_num(struct vc_data *vc)
 {
 	u_char tmp;
-	u_short ch = get_char(vc, (u_short *) spk_pos, &tmp);
+	u_short ch = get_char(vc, (u_short *)spk_pos, &tmp);
 
 	ch &= 0xff;
 	synth_printf(spk_msg_get(MSG_CHAR_INFO), ch, ch);
@@ -1078,7 +1085,7 @@ static void spkup_write(const char *in_buf, int count)
 			    (currsentence <= numsentences[bn]))
 				synth_insert_next_index(currsentence++);
 		}
-		ch = (u_char) *in_buf++;
+		ch = (u_char)*in_buf++;
 		char_type = spk_chartab[ch];
 		if (ch == old_ch && !(char_type & B_NUM)) {
 			if (++rep_count > 2)
@@ -1112,7 +1119,8 @@ static void spkup_write(const char *in_buf, int count)
 			 * suppress multiple to get rid of long pauses and
 			 * clear repeat count
 			 * so if someone has
-			 * repeats on you don't get nothing repeated count */
+			 * repeats on you don't get nothing repeated count
+			 */
 			if (ch != old_ch)
 				synth_printf("%c", ch);
 			else
@@ -1131,7 +1139,8 @@ static void spkup_write(const char *in_buf, int count)
 	if (in_count > 2 && rep_count > 2) {
 		if (last_type & CH_RPT) {
 			synth_printf(" ");
-			synth_printf(spk_msg_get(MSG_REPEAT_DESC2), ++rep_count);
+			synth_printf(spk_msg_get(MSG_REPEAT_DESC2),
+					++rep_count);
 			synth_printf(" ");
 		}
 		rep_count = 0;
@@ -1181,7 +1190,8 @@ static void do_handle_latin(struct vc_data *vc, u_char value, char up_flag)
 
 	spin_lock_irqsave(&speakup_info.spinlock, flags);
 	if (up_flag) {
-		spk_lastkey = spk_keydown = 0;
+		spk_lastkey = 0;
+		spk_keydown = 0;
 		spin_unlock_irqrestore(&speakup_info.spinlock, flags);
 		return;
 	}
@@ -1507,7 +1517,8 @@ static void do_handle_cursor(struct vc_data *vc, u_char value, char up_flag)
 	if (spk_no_intr)
 		spk_do_flush();
 /* the key press flushes if !no_inter but we want to flush on cursor
- * moves regardless of no_inter state */
+ * moves regardless of no_inter state
+ */
 	is_cursor = value + 1;
 	old_cursor_pos = vc->vc_pos;
 	old_cursor_x = vc->vc_x;
@@ -1527,7 +1538,7 @@ static void update_color_buffer(struct vc_data *vc, const char *ic, int len)
 	int i, bi, hi;
 	int vc_num = vc->vc_num;
 
-	bi = ((vc->vc_attr & 0x70) >> 4);
+	bi = (vc->vc_attr & 0x70) >> 4;
 	hi = speakup_console[vc_num]->ht.highsize[bi];
 
 	i = 0;
@@ -1568,7 +1579,7 @@ static int count_highlight_color(struct vc_data *vc)
 	int cc;
 	int vc_num = vc->vc_num;
 	u16 ch;
-	u16 *start = (u16 *) vc->vc_origin;
+	u16 *start = (u16 *)vc->vc_origin;
 
 	for (i = 0; i < 8; i++)
 		speakup_console[vc_num]->ht.bgcount[i] = 0;
@@ -1578,7 +1589,7 @@ static int count_highlight_color(struct vc_data *vc)
 		u16 *ptr;
 
 		for (ptr = start; ptr < end; ptr++) {
-			ch = get_attributes(ptr);
+			ch = get_attributes(vc, ptr);
 			bg = (ch & 0x70) >> 4;
 			speakup_console[vc_num]->ht.bgcount[bg]++;
 		}
@@ -1595,7 +1606,7 @@ static int count_highlight_color(struct vc_data *vc)
 static int get_highlight_color(struct vc_data *vc)
 {
 	int i, j;
-	unsigned int cptr[8], tmp;
+	unsigned int cptr[8];
 	int vc_num = vc->vc_num;
 
 	for (i = 0; i < 8; i++)
@@ -1604,11 +1615,8 @@ static int get_highlight_color(struct vc_data *vc)
 	for (i = 0; i < 7; i++)
 		for (j = i + 1; j < 8; j++)
 			if (speakup_console[vc_num]->ht.bgcount[cptr[i]] >
-			    speakup_console[vc_num]->ht.bgcount[cptr[j]]) {
-				tmp = cptr[i];
-				cptr[i] = cptr[j];
-				cptr[j] = tmp;
-			}
+			    speakup_console[vc_num]->ht.bgcount[cptr[j]])
+				swap(cptr[i], cptr[j]);
 
 	for (i = 0; i < 8; i++)
 		if (speakup_console[vc_num]->ht.bgcount[cptr[i]] != 0)
@@ -1657,7 +1665,8 @@ static void cursor_done(u_long data)
 	if (win_enabled) {
 		if (vc->vc_x >= win_left && vc->vc_x <= win_right &&
 		    vc->vc_y >= win_top && vc->vc_y <= win_bottom) {
-			spk_keydown = is_cursor = 0;
+			spk_keydown = 0;
+			is_cursor = 0;
 			goto out;
 		}
 	}
@@ -1667,7 +1676,8 @@ static void cursor_done(u_long data)
 	}
 	if (cursor_track == CT_Highlight) {
 		if (speak_highlight(vc)) {
-			spk_keydown = is_cursor = 0;
+			spk_keydown = 0;
+			is_cursor = 0;
 			goto out;
 		}
 	}
@@ -1677,7 +1687,8 @@ static void cursor_done(u_long data)
 		say_line_from_to(vc, 0, vc->vc_cols, 0);
 	else
 		say_char(vc);
-	spk_keydown = is_cursor = 0;
+	spk_keydown = 0;
+	is_cursor = 0;
 out:
 	spin_unlock_irqrestore(&speakup_info.spinlock, flags);
 }
@@ -1847,7 +1858,8 @@ static void speakup_win_set(struct vc_data *vc)
 			win_right = spk_x;
 		}
 		snprintf(info, sizeof(info), spk_msg_get(MSG_WINDOW_BOUNDARY),
-			 (win_start) ? spk_msg_get(MSG_END) : spk_msg_get(MSG_START),
+			 (win_start) ?
+				spk_msg_get(MSG_END) : spk_msg_get(MSG_START),
 			 (int)spk_y + 1, (int)spk_x + 1);
 	}
 	synth_printf("%s\n", info);
@@ -1856,8 +1868,10 @@ static void speakup_win_set(struct vc_data *vc)
 
 static void speakup_win_clear(struct vc_data *vc)
 {
-	win_top = win_bottom = 0;
-	win_left = win_right = 0;
+	win_top = 0;
+	win_bottom = 0;
+	win_left = 0;
+	win_right = 0;
 	win_start = 0;
 	synth_printf("%s\n", spk_msg_get(MSG_WINDOW_CLEARED));
 }
@@ -1992,10 +2006,13 @@ static u_char key_speakup, spk_key_locked;
 
 static void speakup_lock(struct vc_data *vc)
 {
-	if (!spk_key_locked)
-		spk_key_locked = key_speakup = 16;
-	else
-		spk_key_locked = key_speakup = 0;
+	if (!spk_key_locked) {
+		spk_key_locked = 16;
+		key_speakup = 16;
+	} else {
+		spk_key_locked = 0;
+		key_speakup = 0;
+	}
 }
 
 typedef void (*spkup_hand) (struct vc_data *);
@@ -2259,7 +2276,7 @@ static void __exit speakup_exit(void)
 	unregister_vt_notifier(&vt_notifier_block);
 	speakup_unregister_devsynth();
 	speakup_cancel_paste();
-	del_timer(&cursor_timer);
+	del_timer_sync(&cursor_timer);
 	kthread_stop(speakup_task);
 	speakup_task = NULL;
 	mutex_lock(&spk_mutex);

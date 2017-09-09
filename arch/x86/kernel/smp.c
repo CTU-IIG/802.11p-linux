@@ -30,7 +30,11 @@
 #include <asm/proto.h>
 #include <asm/apic.h>
 #include <asm/nmi.h>
+#include <asm/mce.h>
 #include <asm/trace/irq_vectors.h>
+#include <asm/kexec.h>
+#include <asm/virtext.h>
+
 /*
  *	Some notes on x86 processor bugs affecting SMP operation:
  *
@@ -121,15 +125,15 @@ static bool smp_no_nmi_ipi = false;
 static void native_smp_send_reschedule(int cpu)
 {
 	if (unlikely(cpu_is_offline(cpu))) {
-		WARN_ON(1);
+		WARN(1, "sched: Unexpected reschedule of offline CPU#%d!\n", cpu);
 		return;
 	}
-	apic->send_IPI_mask(cpumask_of(cpu), RESCHEDULE_VECTOR);
+	apic->send_IPI(cpu, RESCHEDULE_VECTOR);
 }
 
 void native_send_call_func_single_ipi(int cpu)
 {
-	apic->send_IPI_mask(cpumask_of(cpu), CALL_FUNCTION_SINGLE_VECTOR);
+	apic->send_IPI(cpu, CALL_FUNCTION_SINGLE_VECTOR);
 }
 
 void native_send_call_func_ipi(const struct cpumask *mask)
@@ -159,6 +163,7 @@ static int smp_stop_nmi_callback(unsigned int val, struct pt_regs *regs)
 	if (raw_smp_processor_id() == atomic_read(&stopping_cpu))
 		return NMI_HANDLED;
 
+	cpu_emergency_vmxoff();
 	stop_this_cpu(NULL);
 
 	return NMI_HANDLED;
@@ -170,8 +175,8 @@ static int smp_stop_nmi_callback(unsigned int val, struct pt_regs *regs)
 
 asmlinkage __visible void smp_reboot_interrupt(void)
 {
-	ack_APIC_irq();
-	irq_enter();
+	ipi_entering_ack_irq();
+	cpu_emergency_vmxoff();
 	stop_this_cpu(NULL);
 	irq_exit();
 }
@@ -244,6 +249,7 @@ static void native_stop_other_cpus(int wait)
 finish:
 	local_irq_save(flags);
 	disable_local_APIC();
+	mcheck_cpu_clear(this_cpu_ptr(&cpu_info));
 	local_irq_restore(flags);
 }
 
@@ -256,7 +262,7 @@ static inline void __smp_reschedule_interrupt(void)
 	scheduler_ipi();
 }
 
-__visible void smp_reschedule_interrupt(struct pt_regs *regs)
+__visible void __irq_entry smp_reschedule_interrupt(struct pt_regs *regs)
 {
 	ack_APIC_irq();
 	__smp_reschedule_interrupt();
@@ -265,13 +271,7 @@ __visible void smp_reschedule_interrupt(struct pt_regs *regs)
 	 */
 }
 
-static inline void smp_entering_irq(void)
-{
-	ack_APIC_irq();
-	irq_enter();
-}
-
-__visible void smp_trace_reschedule_interrupt(struct pt_regs *regs)
+__visible void __irq_entry smp_trace_reschedule_interrupt(struct pt_regs *regs)
 {
 	/*
 	 * Need to call irq_enter() before calling the trace point.
@@ -279,7 +279,7 @@ __visible void smp_trace_reschedule_interrupt(struct pt_regs *regs)
 	 * scheduler_ipi(). This is OK, since those functions are allowed
 	 * to nest.
 	 */
-	smp_entering_irq();
+	ipi_entering_ack_irq();
 	trace_reschedule_entry(RESCHEDULE_VECTOR);
 	__smp_reschedule_interrupt();
 	trace_reschedule_exit(RESCHEDULE_VECTOR);
@@ -295,16 +295,17 @@ static inline void __smp_call_function_interrupt(void)
 	inc_irq_stat(irq_call_count);
 }
 
-__visible void smp_call_function_interrupt(struct pt_regs *regs)
+__visible void __irq_entry smp_call_function_interrupt(struct pt_regs *regs)
 {
-	smp_entering_irq();
+	ipi_entering_ack_irq();
 	__smp_call_function_interrupt();
 	exiting_irq();
 }
 
-__visible void smp_trace_call_function_interrupt(struct pt_regs *regs)
+__visible void __irq_entry
+smp_trace_call_function_interrupt(struct pt_regs *regs)
 {
-	smp_entering_irq();
+	ipi_entering_ack_irq();
 	trace_call_function_entry(CALL_FUNCTION_VECTOR);
 	__smp_call_function_interrupt();
 	trace_call_function_exit(CALL_FUNCTION_VECTOR);
@@ -317,16 +318,18 @@ static inline void __smp_call_function_single_interrupt(void)
 	inc_irq_stat(irq_call_count);
 }
 
-__visible void smp_call_function_single_interrupt(struct pt_regs *regs)
+__visible void __irq_entry
+smp_call_function_single_interrupt(struct pt_regs *regs)
 {
-	smp_entering_irq();
+	ipi_entering_ack_irq();
 	__smp_call_function_single_interrupt();
 	exiting_irq();
 }
 
-__visible void smp_trace_call_function_single_interrupt(struct pt_regs *regs)
+__visible void __irq_entry
+smp_trace_call_function_single_interrupt(struct pt_regs *regs)
 {
-	smp_entering_irq();
+	ipi_entering_ack_irq();
 	trace_call_function_single_entry(CALL_FUNCTION_SINGLE_VECTOR);
 	__smp_call_function_single_interrupt();
 	trace_call_function_single_exit(CALL_FUNCTION_SINGLE_VECTOR);
@@ -347,6 +350,9 @@ struct smp_ops smp_ops = {
 	.smp_cpus_done		= native_smp_cpus_done,
 
 	.stop_other_cpus	= native_stop_other_cpus,
+#if defined(CONFIG_KEXEC_CORE)
+	.crash_stop_other_cpus	= kdump_nmi_shootdown_cpus,
+#endif
 	.smp_send_reschedule	= native_smp_send_reschedule,
 
 	.cpu_up			= native_cpu_up,

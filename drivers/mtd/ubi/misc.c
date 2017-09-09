@@ -74,6 +74,8 @@ int ubi_check_volume(struct ubi_device *ubi, int vol_id)
 	for (i = 0; i < vol->used_ebs; i++) {
 		int size;
 
+		cond_resched();
+
 		if (i == vol->used_ebs - 1)
 			size = vol->last_eb_bytes;
 		else
@@ -150,4 +152,53 @@ int ubi_check_pattern(const void *buf, uint8_t patt, int size)
 		if (((const uint8_t *)buf)[i] != patt)
 			return 0;
 	return 1;
+}
+
+/* Normal UBI messages */
+void ubi_msg(const struct ubi_device *ubi, const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	pr_notice(UBI_NAME_STR "%d: %pV\n", ubi->ubi_num, &vaf);
+
+	va_end(args);
+}
+
+/* UBI warning messages */
+void ubi_warn(const struct ubi_device *ubi, const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	pr_warn(UBI_NAME_STR "%d warning: %ps: %pV\n",
+		ubi->ubi_num, __builtin_return_address(0), &vaf);
+
+	va_end(args);
+}
+
+/* UBI error messages */
+void ubi_err(const struct ubi_device *ubi, const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	pr_err(UBI_NAME_STR "%d error: %ps: %pV\n",
+	       ubi->ubi_num, __builtin_return_address(0), &vaf);
+	va_end(args);
 }

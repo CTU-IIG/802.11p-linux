@@ -12,10 +12,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/delay.h>
@@ -347,6 +343,7 @@ static int wl1273_fm_set_tx_freq(struct wl1273_device *radio, unsigned int freq)
 {
 	struct wl1273_core *core = radio->core;
 	int r = 0;
+	unsigned long t;
 
 	if (freq < WL1273_BAND_TX_LOW) {
 		dev_err(radio->dev,
@@ -378,11 +375,11 @@ static int wl1273_fm_set_tx_freq(struct wl1273_device *radio, unsigned int freq)
 	reinit_completion(&radio->busy);
 
 	/* wait for the FR IRQ */
-	r = wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(2000));
-	if (!r)
+	t = wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(2000));
+	if (!t)
 		return -ETIMEDOUT;
 
-	dev_dbg(radio->dev, "WL1273_CHANL_SET: %d\n", r);
+	dev_dbg(radio->dev, "WL1273_CHANL_SET: %lu\n", t);
 
 	/* Enable the output power */
 	r = core->write(core, WL1273_POWER_ENB_SET, 1);
@@ -392,12 +389,12 @@ static int wl1273_fm_set_tx_freq(struct wl1273_device *radio, unsigned int freq)
 	reinit_completion(&radio->busy);
 
 	/* wait for the POWER_ENB IRQ */
-	r = wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(1000));
-	if (!r)
+	t = wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(1000));
+	if (!t)
 		return -ETIMEDOUT;
 
 	radio->tx_frequency = freq;
-	dev_dbg(radio->dev, "WL1273_POWER_ENB_SET: %d\n", r);
+	dev_dbg(radio->dev, "WL1273_POWER_ENB_SET: %lu\n", t);
 
 	return	0;
 }
@@ -406,6 +403,7 @@ static int wl1273_fm_set_rx_freq(struct wl1273_device *radio, unsigned int freq)
 {
 	struct wl1273_core *core = radio->core;
 	int r, f;
+	unsigned long t;
 
 	if (freq < radio->rangelow) {
 		dev_err(radio->dev,
@@ -446,8 +444,8 @@ static int wl1273_fm_set_rx_freq(struct wl1273_device *radio, unsigned int freq)
 
 	reinit_completion(&radio->busy);
 
-	r = wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(2000));
-	if (!r) {
+	t = wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(2000));
+	if (!t) {
 		dev_err(radio->dev, "%s: TIMEOUT\n", __func__);
 		return -ETIMEDOUT;
 	}
@@ -826,9 +824,12 @@ static int wl1273_fm_set_seek(struct wl1273_device *radio,
 	if (r)
 		goto out;
 
+	/* wait for the FR IRQ */
 	wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(1000));
-	if (!(radio->irq_received & WL1273_BL_EVENT))
+	if (!(radio->irq_received & WL1273_BL_EVENT)) {
+		r = -ETIMEDOUT;
 		goto out;
+	}
 
 	radio->irq_received &= ~WL1273_BL_EVENT;
 
@@ -854,7 +855,9 @@ static int wl1273_fm_set_seek(struct wl1273_device *radio,
 	if (r)
 		goto out;
 
-	wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(1000));
+	/* wait for the FR IRQ */
+	if (!wait_for_completion_timeout(&radio->busy, msecs_to_jiffies(1000)))
+		r = -ETIMEDOUT;
 out:
 	dev_dbg(radio->dev, "%s: Err: %d\n", __func__, r);
 	return r;
@@ -2061,8 +2064,7 @@ static int wl1273_fm_radio_probe(struct platform_device *pdev)
 			goto err_request_irq;
 		}
 	} else {
-		dev_err(radio->dev, WL1273_FM_DRIVER_NAME ": Core WL1273 IRQ"
-			" not configured");
+		dev_err(radio->dev, WL1273_FM_DRIVER_NAME ": Core WL1273 IRQ not configured");
 		r = -EINVAL;
 		goto pdata_err;
 	}

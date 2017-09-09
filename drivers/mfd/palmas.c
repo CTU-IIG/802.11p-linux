@@ -431,9 +431,6 @@ static void palmas_power_off(void)
 	unsigned int addr;
 	int ret, slave;
 
-	if (!palmas_dev)
-		return;
-
 	slave = PALMAS_BASE_TO_SLAVE(PALMAS_PMU_CONTROL_BASE);
 	addr = PALMAS_BASE_TO_REG(PALMAS_PMU_CONTROL_BASE, PALMAS_DEV_CTRL);
 
@@ -719,7 +716,6 @@ static struct i2c_driver palmas_i2c_driver = {
 	.driver = {
 		   .name = "palmas",
 		   .of_match_table = of_palmas_match_tbl,
-		   .owner = THIS_MODULE,
 	},
 	.probe = palmas_i2c_probe,
 	.remove = palmas_i2c_remove,

@@ -18,14 +18,14 @@
 
 #include <linux/list.h>
 #include <linux/percpu_ida.h>
+#include <net/ipv6.h>         /* ipv6_addr_equal() */
 #include <scsi/scsi_tcq.h>
 #include <scsi/iscsi_proto.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
-#include <target/target_core_configfs.h>
 #include <target/iscsi/iscsi_transport.h>
 
-#include "iscsi_target_core.h"
+#include <target/iscsi/iscsi_target_core.h>
 #include "iscsi_target_parameters.h"
 #include "iscsi_target_seq_pdu_list.h"
 #include "iscsi_target_datain_values.h"
@@ -33,7 +33,6 @@
 #include "iscsi_target_erl1.h"
 #include "iscsi_target_erl2.h"
 #include "iscsi_target_tpg.h"
-#include "iscsi_target_tq.h"
 #include "iscsi_target_util.h"
 #include "iscsi_target.h"
 
@@ -235,6 +234,7 @@ struct iscsi_r2t *iscsit_get_holder_for_r2tsn(
 
 static inline int iscsit_check_received_cmdsn(struct iscsi_session *sess, u32 cmdsn)
 {
+	u32 max_cmdsn;
 	int ret;
 
 	/*
@@ -243,10 +243,10 @@ static inline int iscsit_check_received_cmdsn(struct iscsi_session *sess, u32 cm
 	 * or order CmdSNs due to multiple connection sessions and/or
 	 * CRC failures.
 	 */
-	if (iscsi_sna_gt(cmdsn, sess->max_cmd_sn)) {
+	max_cmdsn = atomic_read(&sess->max_cmd_sn);
+	if (iscsi_sna_gt(cmdsn, max_cmdsn)) {
 		pr_err("Received CmdSN: 0x%08x is greater than"
-		       " MaxCmdSN: 0x%08x, ignoring.\n", cmdsn,
-		       sess->max_cmd_sn);
+		       " MaxCmdSN: 0x%08x, ignoring.\n", cmdsn, max_cmdsn);
 		ret = CMDSN_MAXCMDSN_OVERRUN;
 
 	} else if (cmdsn == sess->exp_cmd_sn) {
@@ -390,6 +390,7 @@ struct iscsi_cmd *iscsit_find_cmd_from_itt(
 			init_task_tag, conn->cid);
 	return NULL;
 }
+EXPORT_SYMBOL(iscsit_find_cmd_from_itt);
 
 struct iscsi_cmd *iscsit_find_cmd_from_itt_or_dump(
 	struct iscsi_conn *conn,
@@ -416,6 +417,7 @@ struct iscsi_cmd *iscsit_find_cmd_from_itt_or_dump(
 
 	return NULL;
 }
+EXPORT_SYMBOL(iscsit_find_cmd_from_itt_or_dump);
 
 struct iscsi_cmd *iscsit_find_cmd_from_ttt(
 	struct iscsi_conn *conn,
@@ -514,6 +516,7 @@ void iscsit_add_cmd_to_immediate_queue(
 
 	wake_up(&conn->queues_wq);
 }
+EXPORT_SYMBOL(iscsit_add_cmd_to_immediate_queue);
 
 struct iscsi_queue_req *iscsit_get_cmd_from_immediate_queue(struct iscsi_conn *conn)
 {
@@ -564,7 +567,7 @@ static void iscsit_remove_cmd_from_immediate_queue(
 	}
 }
 
-void iscsit_add_cmd_to_response_queue(
+int iscsit_add_cmd_to_response_queue(
 	struct iscsi_cmd *cmd,
 	struct iscsi_conn *conn,
 	u8 state)
@@ -575,7 +578,7 @@ void iscsit_add_cmd_to_response_queue(
 	if (!qr) {
 		pr_err("Unable to allocate memory for"
 			" struct iscsi_queue_req\n");
-		return;
+		return -ENOMEM;
 	}
 	INIT_LIST_HEAD(&qr->qr_list);
 	qr->cmd = cmd;
@@ -587,6 +590,7 @@ void iscsit_add_cmd_to_response_queue(
 	spin_unlock_bh(&conn->response_queue_lock);
 
 	wake_up(&conn->queues_wq);
+	return 0;
 }
 
 struct iscsi_queue_req *iscsit_get_cmd_from_response_queue(struct iscsi_conn *conn)
@@ -725,28 +729,33 @@ void __iscsit_free_cmd(struct iscsi_cmd *cmd, bool scsi_cmd,
 		iscsit_remove_cmd_from_immediate_queue(cmd, conn);
 		iscsit_remove_cmd_from_response_queue(cmd, conn);
 	}
+
+	if (conn && conn->conn_transport->iscsit_release_cmd)
+		conn->conn_transport->iscsit_release_cmd(conn, cmd);
 }
 
 void iscsit_free_cmd(struct iscsi_cmd *cmd, bool shutdown)
 {
 	struct se_cmd *se_cmd = NULL;
 	int rc;
+	bool op_scsi = false;
 	/*
 	 * Determine if a struct se_cmd is associated with
 	 * this struct iscsi_cmd.
 	 */
 	switch (cmd->iscsi_opcode) {
 	case ISCSI_OP_SCSI_CMD:
-		se_cmd = &cmd->se_cmd;
-		__iscsit_free_cmd(cmd, true, shutdown);
+		op_scsi = true;
 		/*
 		 * Fallthrough
 		 */
 	case ISCSI_OP_SCSI_TMFUNC:
-		rc = transport_generic_free_cmd(&cmd->se_cmd, shutdown);
-		if (!rc && shutdown && se_cmd && se_cmd->se_sess) {
-			__iscsit_free_cmd(cmd, true, shutdown);
-			target_put_sess_cmd(se_cmd->se_sess, se_cmd);
+		se_cmd = &cmd->se_cmd;
+		__iscsit_free_cmd(cmd, op_scsi, shutdown);
+		rc = transport_generic_free_cmd(se_cmd, shutdown);
+		if (!rc && shutdown && se_cmd->se_sess) {
+			__iscsit_free_cmd(cmd, op_scsi, shutdown);
+			target_put_sess_cmd(se_cmd);
 		}
 		break;
 	case ISCSI_OP_REJECT:
@@ -762,7 +771,7 @@ void iscsit_free_cmd(struct iscsi_cmd *cmd, bool shutdown)
 			rc = transport_generic_free_cmd(&cmd->se_cmd, shutdown);
 			if (!rc && shutdown && se_cmd->se_sess) {
 				__iscsit_free_cmd(cmd, true, shutdown);
-				target_put_sess_cmd(se_cmd->se_sess, se_cmd);
+				target_put_sess_cmd(se_cmd);
 			}
 			break;
 		}
@@ -773,6 +782,7 @@ void iscsit_free_cmd(struct iscsi_cmd *cmd, bool shutdown)
 		break;
 	}
 }
+EXPORT_SYMBOL(iscsit_free_cmd);
 
 int iscsit_check_session_usage_count(struct iscsi_session *sess)
 {
@@ -807,54 +817,6 @@ void iscsit_inc_session_usage_count(struct iscsi_session *sess)
 	spin_lock_bh(&sess->session_usage_lock);
 	sess->session_usage_count++;
 	spin_unlock_bh(&sess->session_usage_lock);
-}
-
-/*
- *	Setup conn->if_marker and conn->of_marker values based upon
- *	the initial marker-less interval. (see iSCSI v19 A.2)
- */
-int iscsit_set_sync_and_steering_values(struct iscsi_conn *conn)
-{
-	int login_ifmarker_count = 0, login_ofmarker_count = 0, next_marker = 0;
-	/*
-	 * IFMarkInt and OFMarkInt are negotiated as 32-bit words.
-	 */
-	u32 IFMarkInt = (conn->conn_ops->IFMarkInt * 4);
-	u32 OFMarkInt = (conn->conn_ops->OFMarkInt * 4);
-
-	if (conn->conn_ops->OFMarker) {
-		/*
-		 * Account for the first Login Command received not
-		 * via iscsi_recv_msg().
-		 */
-		conn->of_marker += ISCSI_HDR_LEN;
-		if (conn->of_marker <= OFMarkInt) {
-			conn->of_marker = (OFMarkInt - conn->of_marker);
-		} else {
-			login_ofmarker_count = (conn->of_marker / OFMarkInt);
-			next_marker = (OFMarkInt * (login_ofmarker_count + 1)) +
-					(login_ofmarker_count * MARKER_SIZE);
-			conn->of_marker = (next_marker - conn->of_marker);
-		}
-		conn->of_marker_offset = 0;
-		pr_debug("Setting OFMarker value to %u based on Initial"
-			" Markerless Interval.\n", conn->of_marker);
-	}
-
-	if (conn->conn_ops->IFMarker) {
-		if (conn->if_marker <= IFMarkInt) {
-			conn->if_marker = (IFMarkInt - conn->if_marker);
-		} else {
-			login_ifmarker_count = (conn->if_marker / IFMarkInt);
-			next_marker = (IFMarkInt * (login_ifmarker_count + 1)) +
-					(login_ifmarker_count * MARKER_SIZE);
-			conn->if_marker = (next_marker - conn->if_marker);
-		}
-		pr_debug("Setting IFMarker value to %u based on Initial"
-			" Markerless Interval.\n", conn->if_marker);
-	}
-
-	return 0;
 }
 
 struct iscsi_conn *iscsit_get_conn_from_cid(struct iscsi_session *sess, u16 cid)
@@ -939,13 +901,8 @@ static int iscsit_add_nopin(struct iscsi_conn *conn, int want_response)
 	state = (want_response) ? ISTATE_SEND_NOPIN_WANT_RESPONSE :
 				ISTATE_SEND_NOPIN_NO_RESPONSE;
 	cmd->init_task_tag = RESERVED_ITT;
-	spin_lock_bh(&conn->sess->ttt_lock);
-	cmd->targ_xfer_tag = (want_response) ? conn->sess->targ_xfer_tag++ :
-			0xFFFFFFFF;
-	if (want_response && (cmd->targ_xfer_tag == 0xFFFFFFFF))
-		cmd->targ_xfer_tag = conn->sess->targ_xfer_tag++;
-	spin_unlock_bh(&conn->sess->ttt_lock);
-
+	cmd->targ_xfer_tag = (want_response) ?
+			     session_get_next_ttt(conn->sess) : 0xFFFFFFFF;
 	spin_lock_bh(&conn->cmd_lock);
 	list_add_tail(&cmd->i_conn_node, &conn->conn_cmd_list);
 	spin_unlock_bh(&conn->cmd_lock);
@@ -1336,9 +1293,8 @@ static int iscsit_do_rx_data(
 	iov_iter_kvec(&msg.msg_iter, READ | ITER_KVEC,
 		      count->iov, count->iov_count, data);
 
-	while (total_rx < data) {
-		rx_loop = sock_recvmsg(conn->sock, &msg,
-				      (data - total_rx), MSG_WAITALL);
+	while (msg_data_left(&msg)) {
+		rx_loop = sock_recvmsg(conn->sock, &msg, MSG_WAITALL);
 		if (rx_loop <= 0) {
 			pr_debug("rx_loop: %d total_rx: %d\n",
 				rx_loop, total_rx);
@@ -1350,43 +1306,6 @@ static int iscsit_do_rx_data(
 	}
 
 	return total_rx;
-}
-
-static int iscsit_do_tx_data(
-	struct iscsi_conn *conn,
-	struct iscsi_data_count *count)
-{
-	int data = count->data_length, total_tx = 0, tx_loop = 0, iov_len;
-	struct kvec *iov_p;
-	struct msghdr msg;
-
-	if (!conn || !conn->sock || !conn->conn_ops)
-		return -1;
-
-	if (data <= 0) {
-		pr_err("Data length is: %d\n", data);
-		return -1;
-	}
-
-	memset(&msg, 0, sizeof(struct msghdr));
-
-	iov_p = count->iov;
-	iov_len = count->iov_count;
-
-	while (total_tx < data) {
-		tx_loop = kernel_sendmsg(conn->sock, &msg, iov_p, iov_len,
-					(data - total_tx));
-		if (tx_loop <= 0) {
-			pr_debug("tx_loop: %d total_tx %d\n",
-				tx_loop, total_tx);
-			return tx_loop;
-		}
-		total_tx += tx_loop;
-		pr_debug("tx_loop: %d, total_tx: %d, data: %d\n",
-					tx_loop, total_tx, data);
-	}
-
-	return total_tx;
 }
 
 int rx_data(
@@ -1415,18 +1334,35 @@ int tx_data(
 	int iov_count,
 	int data)
 {
-	struct iscsi_data_count c;
+	struct msghdr msg;
+	int total_tx = 0;
 
 	if (!conn || !conn->sock || !conn->conn_ops)
 		return -1;
 
-	memset(&c, 0, sizeof(struct iscsi_data_count));
-	c.iov = iov;
-	c.iov_count = iov_count;
-	c.data_length = data;
-	c.type = ISCSI_TX_DATA;
+	if (data <= 0) {
+		pr_err("Data length is: %d\n", data);
+		return -1;
+	}
 
-	return iscsit_do_tx_data(conn, &c);
+	memset(&msg, 0, sizeof(struct msghdr));
+
+	iov_iter_kvec(&msg.msg_iter, WRITE | ITER_KVEC,
+		      iov, iov_count, data);
+
+	while (msg_data_left(&msg)) {
+		int tx_loop = sock_sendmsg(conn->sock, &msg);
+		if (tx_loop <= 0) {
+			pr_debug("tx_loop: %d total_tx %d\n",
+				tx_loop, total_tx);
+			return tx_loop;
+		}
+		total_tx += tx_loop;
+		pr_debug("tx_loop: %d, total_tx: %d, data: %d\n",
+					tx_loop, total_tx, data);
+	}
+
+	return total_tx;
 }
 
 void iscsit_collect_login_stats(
@@ -1445,13 +1381,6 @@ void iscsit_collect_login_stats(
 	ls = &tiqn->login_stats;
 
 	spin_lock(&ls->lock);
-	if (!strcmp(conn->login_ip, ls->last_intr_fail_ip_addr) &&
-	    ((get_jiffies_64() - ls->last_fail_time) < 10)) {
-		/* We already have the failure info for this login */
-		spin_unlock(&ls->lock);
-		return;
-	}
-
 	if (status_class == ISCSI_STATUS_CLS_SUCCESS)
 		ls->accepts++;
 	else if (status_class == ISCSI_STATUS_CLS_REDIRECT) {
@@ -1485,8 +1414,7 @@ void iscsit_collect_login_stats(
 
 		ls->last_intr_fail_ip_family = conn->login_family;
 
-		snprintf(ls->last_intr_fail_ip_addr, IPV6_ADDRESS_SPACE,
-				"%s", conn->login_ip);
+		ls->last_intr_fail_sockaddr = conn->login_sockaddr;
 		ls->last_fail_time = get_jiffies_64();
 	}
 
@@ -1497,10 +1425,10 @@ struct iscsi_tiqn *iscsit_snmp_get_tiqn(struct iscsi_conn *conn)
 {
 	struct iscsi_portal_group *tpg;
 
-	if (!conn || !conn->sess)
+	if (!conn)
 		return NULL;
 
-	tpg = conn->sess->tpg;
+	tpg = conn->tpg;
 	if (!tpg)
 		return NULL;
 

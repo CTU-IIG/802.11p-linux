@@ -12,11 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
- *
  * File: baseband.c
  *
  * Purpose: Implement functions to access baseband
@@ -27,7 +22,8 @@
  *
  * Functions:
  *      BBuGetFrameTime        - Calculate data frame transmitting time
- *      BBvCaculateParameter   - Caculate PhyLength, PhyService and Phy Signal parameter for baseband Tx
+ *      BBvCaculateParameter   - Caculate PhyLength, PhyService and Phy Signal
+ *                               parameter for baseband Tx
  *      BBbReadEmbedded         - Embedded read baseband register via MAC
  *      BBbWriteEmbedded        - Embedded write baseband register via MAC
  *      BBbVT3253Init          - VIA VT3253 baseband chip init code
@@ -35,8 +31,10 @@
  * Revision History:
  *      06-10-2003 Bryan YC Fan:  Re-write codes to support VT3253 spec.
  *      08-07-2003 Bryan YC Fan:  Add MAXIM2827/2825 and RFMD2959 support.
- *      08-26-2003 Kyle Hsu    :  Modify BBuGetFrameTime() and BBvCalculateParameter().
- *                                cancel the setting of MAC_REG_SOFTPWRCTL on BBbVT3253Init().
+ *      08-26-2003 Kyle Hsu    :  Modify BBuGetFrameTime() and
+ *				  BBvCalculateParameter().
+ *                                cancel the setting of MAC_REG_SOFTPWRCTL on
+ *				  BBbVT3253Init().
  *                                Add the comments.
  *      09-01-2003 Bryan YC Fan:  RF & BB tables updated.
  *                                Modified BBvLoopbackOn & BBvLoopbackOff().
@@ -65,7 +63,7 @@
 /*---------------------  Static Variables  --------------------------*/
 
 #define CB_VT3253_INIT_FOR_RFMD 446
-static unsigned char byVT3253InitTab_RFMD[CB_VT3253_INIT_FOR_RFMD][2] = {
+static const unsigned char byVT3253InitTab_RFMD[CB_VT3253_INIT_FOR_RFMD][2] = {
 	{0x00, 0x30},
 	{0x01, 0x00},
 	{0x02, 0x00},
@@ -515,7 +513,7 @@ static unsigned char byVT3253InitTab_RFMD[CB_VT3253_INIT_FOR_RFMD][2] = {
 };
 
 #define CB_VT3253B0_INIT_FOR_RFMD 256
-static unsigned char byVT3253B0_RFMD[CB_VT3253B0_INIT_FOR_RFMD][2] = {
+static const unsigned char byVT3253B0_RFMD[CB_VT3253B0_INIT_FOR_RFMD][2] = {
 	{0x00, 0x31},
 	{0x01, 0x00},
 	{0x02, 0x00},
@@ -776,7 +774,8 @@ static unsigned char byVT3253B0_RFMD[CB_VT3253B0_INIT_FOR_RFMD][2] = {
 
 #define CB_VT3253B0_AGC_FOR_RFMD2959 195
 /* For RFMD2959 */
-static unsigned char byVT3253B0_AGC4_RFMD2959[CB_VT3253B0_AGC_FOR_RFMD2959][2] = {
+static
+unsigned char byVT3253B0_AGC4_RFMD2959[CB_VT3253B0_AGC_FOR_RFMD2959][2] = {
 	{0xF0, 0x00},
 	{0xF1, 0x3E},
 	{0xF0, 0x80},
@@ -976,7 +975,8 @@ static unsigned char byVT3253B0_AGC4_RFMD2959[CB_VT3253B0_AGC_FOR_RFMD2959][2] =
 
 #define CB_VT3253B0_INIT_FOR_AIROHA2230 256
 /* For AIROHA */
-static unsigned char byVT3253B0_AIROHA2230[CB_VT3253B0_INIT_FOR_AIROHA2230][2] = {
+static
+unsigned char byVT3253B0_AIROHA2230[CB_VT3253B0_INIT_FOR_AIROHA2230][2] = {
 	{0x00, 0x31},
 	{0x01, 0x00},
 	{0x02, 0x00},
@@ -1698,46 +1698,6 @@ static const unsigned short awcFrameTime[MAX_RATE] = {
 		10, 20, 55, 110, 24, 36, 48, 72, 96, 144, 192, 216
 };
 
-/*---------------------  Static Functions  --------------------------*/
-
-static
-unsigned long
-s_ulGetRatio(struct vnt_private *priv);
-
-static
-void
-s_vChangeAntenna(
-	struct vnt_private *priv
-);
-
-static
-void
-s_vChangeAntenna(
-	struct vnt_private *priv
-)
-{
-	if (priv->dwRxAntennaSel == 0) {
-		priv->dwRxAntennaSel = 1;
-		if (priv->bTxRxAntInv == true)
-			BBvSetRxAntennaMode(priv, ANT_A);
-		else
-			BBvSetRxAntennaMode(priv, ANT_B);
-	} else {
-		priv->dwRxAntennaSel = 0;
-		if (priv->bTxRxAntInv == true)
-			BBvSetRxAntennaMode(priv, ANT_B);
-		else
-			BBvSetRxAntennaMode(priv, ANT_A);
-	}
-	if (priv->dwTxAntennaSel == 0) {
-		priv->dwTxAntennaSel = 1;
-		BBvSetTxAntennaMode(priv, ANT_B);
-	} else {
-		priv->dwTxAntennaSel = 0;
-		BBvSetTxAntennaMode(priv, ANT_A);
-	}
-}
-
 /*---------------------  Export Variables  --------------------------*/
 /*
  * Description: Calculate data frame transmitting time
@@ -1764,13 +1724,11 @@ BBuGetFrameTime(
 	unsigned int uFrameTime;
 	unsigned int uPreamble;
 	unsigned int uTmp;
-	unsigned int uRateIdx = (unsigned int) wRate;
+	unsigned int uRateIdx = (unsigned int)wRate;
 	unsigned int uRate = 0;
 
-	if (uRateIdx > RATE_54M) {
-		ASSERT(0);
+	if (uRateIdx > RATE_54M)
 		return 0;
-	}
 
 	uRate = (unsigned int)awcFrameTime[uRateIdx];
 
@@ -1953,7 +1911,7 @@ void vnt_get_phy_field(struct vnt_private *priv, u32 frame_length,
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *      byBBAddr    - address of register in Baseband
  *  Out:
  *      pbyData     - data read
@@ -1964,27 +1922,26 @@ void vnt_get_phy_field(struct vnt_private *priv, u32 frame_length,
 bool BBbReadEmbedded(struct vnt_private *priv,
 		     unsigned char byBBAddr, unsigned char *pbyData)
 {
-	void __iomem *dwIoBase = priv->PortOffset;
+	void __iomem *iobase = priv->PortOffset;
 	unsigned short ww;
 	unsigned char byValue;
 
 	/* BB reg offset */
-	VNSvOutPortB(dwIoBase + MAC_REG_BBREGADR, byBBAddr);
+	VNSvOutPortB(iobase + MAC_REG_BBREGADR, byBBAddr);
 
 	/* turn on REGR */
-	MACvRegBitsOn(dwIoBase, MAC_REG_BBREGCTL, BBREGCTL_REGR);
+	MACvRegBitsOn(iobase, MAC_REG_BBREGCTL, BBREGCTL_REGR);
 	/* W_MAX_TIMEOUT is the timeout period */
 	for (ww = 0; ww < W_MAX_TIMEOUT; ww++) {
-		VNSvInPortB(dwIoBase + MAC_REG_BBREGCTL, &byValue);
+		VNSvInPortB(iobase + MAC_REG_BBREGCTL, &byValue);
 		if (byValue & BBREGCTL_DONE)
 			break;
 	}
 
 	/* get BB data */
-	VNSvInPortB(dwIoBase + MAC_REG_BBREGDATA, pbyData);
+	VNSvInPortB(iobase + MAC_REG_BBREGDATA, pbyData);
 
 	if (ww == W_MAX_TIMEOUT) {
-		DBG_PORT80(0x30);
 		pr_debug(" DBG_PORT80(0x30)\n");
 		return false;
 	}
@@ -1996,7 +1953,7 @@ bool BBbReadEmbedded(struct vnt_private *priv,
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *      byBBAddr    - address of register in Baseband
  *      byData      - data to write
  *  Out:
@@ -2008,26 +1965,25 @@ bool BBbReadEmbedded(struct vnt_private *priv,
 bool BBbWriteEmbedded(struct vnt_private *priv,
 		      unsigned char byBBAddr, unsigned char byData)
 {
-	void __iomem *dwIoBase = priv->PortOffset;
+	void __iomem *iobase = priv->PortOffset;
 	unsigned short ww;
 	unsigned char byValue;
 
 	/* BB reg offset */
-	VNSvOutPortB(dwIoBase + MAC_REG_BBREGADR, byBBAddr);
+	VNSvOutPortB(iobase + MAC_REG_BBREGADR, byBBAddr);
 	/* set BB data */
-	VNSvOutPortB(dwIoBase + MAC_REG_BBREGDATA, byData);
+	VNSvOutPortB(iobase + MAC_REG_BBREGDATA, byData);
 
 	/* turn on BBREGCTL_REGW */
-	MACvRegBitsOn(dwIoBase, MAC_REG_BBREGCTL, BBREGCTL_REGW);
+	MACvRegBitsOn(iobase, MAC_REG_BBREGCTL, BBREGCTL_REGW);
 	/* W_MAX_TIMEOUT is the timeout period */
 	for (ww = 0; ww < W_MAX_TIMEOUT; ww++) {
-		VNSvInPortB(dwIoBase + MAC_REG_BBREGCTL, &byValue);
+		VNSvInPortB(iobase + MAC_REG_BBREGCTL, &byValue);
 		if (byValue & BBREGCTL_DONE)
 			break;
 	}
 
 	if (ww == W_MAX_TIMEOUT) {
-		DBG_PORT80(0x31);
 		pr_debug(" DBG_PORT80(0x31)\n");
 		return false;
 	}
@@ -2039,7 +1995,7 @@ bool BBbWriteEmbedded(struct vnt_private *priv,
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *      byRevId     - Revision ID
  *      byRFType    - RF type
  *  Out:
@@ -2053,24 +2009,30 @@ bool BBbVT3253Init(struct vnt_private *priv)
 {
 	bool bResult = true;
 	int        ii;
-	void __iomem *dwIoBase = priv->PortOffset;
+	void __iomem *iobase = priv->PortOffset;
 	unsigned char byRFType = priv->byRFType;
 	unsigned char byLocalID = priv->byLocalID;
 
 	if (byRFType == RF_RFMD2959) {
 		if (byLocalID <= REV_ID_VT3253_A1) {
 			for (ii = 0; ii < CB_VT3253_INIT_FOR_RFMD; ii++)
-				bResult &= BBbWriteEmbedded(priv, byVT3253InitTab_RFMD[ii][0], byVT3253InitTab_RFMD[ii][1]);
+				bResult &= BBbWriteEmbedded(priv,
+					byVT3253InitTab_RFMD[ii][0],
+					byVT3253InitTab_RFMD[ii][1]);
 
 		} else {
 			for (ii = 0; ii < CB_VT3253B0_INIT_FOR_RFMD; ii++)
-				bResult &= BBbWriteEmbedded(priv, byVT3253B0_RFMD[ii][0], byVT3253B0_RFMD[ii][1]);
+				bResult &= BBbWriteEmbedded(priv,
+					byVT3253B0_RFMD[ii][0],
+					byVT3253B0_RFMD[ii][1]);
 
 			for (ii = 0; ii < CB_VT3253B0_AGC_FOR_RFMD2959; ii++)
-				bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC4_RFMD2959[ii][0], byVT3253B0_AGC4_RFMD2959[ii][1]);
+				bResult &= BBbWriteEmbedded(priv,
+					byVT3253B0_AGC4_RFMD2959[ii][0],
+					byVT3253B0_AGC4_RFMD2959[ii][1]);
 
-			VNSvOutPortD(dwIoBase + MAC_REG_ITRTMSET, 0x23);
-			MACvRegBitsOn(dwIoBase, MAC_REG_PAPEDELAY, BIT(0));
+			VNSvOutPortD(iobase + MAC_REG_ITRTMSET, 0x23);
+			MACvRegBitsOn(iobase, MAC_REG_PAPEDELAY, BIT(0));
 		}
 		priv->abyBBVGA[0] = 0x18;
 		priv->abyBBVGA[1] = 0x0A;
@@ -2082,10 +2044,13 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[3] = 0;
 	} else if ((byRFType == RF_AIROHA) || (byRFType == RF_AL2230S)) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_AIROHA2230; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AIROHA2230[ii][0], byVT3253B0_AIROHA2230[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AIROHA2230[ii][0],
+				byVT3253B0_AIROHA2230[ii][1]);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x1C;
 		priv->abyBBVGA[1] = 0x10;
@@ -2097,13 +2062,17 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[3] = 0;
 	} else if (byRFType == RF_UW2451) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_UW2451; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_UW2451[ii][0], byVT3253B0_UW2451[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_UW2451[ii][0],
+				byVT3253B0_UW2451[ii][1]);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0],
+				byVT3253B0_AGC[ii][1]);
 
-		VNSvOutPortB(dwIoBase + MAC_REG_ITRTMSET, 0x23);
-		MACvRegBitsOn(dwIoBase, MAC_REG_PAPEDELAY, BIT(0));
+		VNSvOutPortB(iobase + MAC_REG_ITRTMSET, 0x23);
+		MACvRegBitsOn(iobase, MAC_REG_PAPEDELAY, BIT(0));
 
 		priv->abyBBVGA[0] = 0x14;
 		priv->abyBBVGA[1] = 0x0A;
@@ -2115,12 +2084,24 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[3] = 0;
 	} else if (byRFType == RF_UW2452) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_UW2451; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_UW2451[ii][0], byVT3253B0_UW2451[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_UW2451[ii][0],
+				byVT3253B0_UW2451[ii][1]);
 
-		/* Init ANT B select,TX Config CR09 = 0x61->0x45, 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x09,0x41);*/
-		/* Init ANT B select,RX Config CR10 = 0x28->0x2A, 0x2A->0x28(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x0a,0x28);*/
+		/* Init ANT B select,
+		 * TX Config CR09 = 0x61->0x45,
+		 * 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted)
+		 */
+
+		/*bResult &= BBbWriteEmbedded(iobase,0x09,0x41);*/
+
+		/* Init ANT B select,
+		 * RX Config CR10 = 0x28->0x2A,
+		 * 0x2A->0x28(VC1/VC2 define,
+		 * make the ANT_A, ANT_B inverted)
+		 */
+
+		/*bResult &= BBbWriteEmbedded(iobase,0x0a,0x28);*/
 		/* Select VC1/VC2, CR215 = 0x02->0x06 */
 		bResult &= BBbWriteEmbedded(priv, 0xd7, 0x06);
 
@@ -2136,7 +2117,8 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		bResult &= BBbWriteEmbedded(priv, 0xb0, 0x58);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x14;
 		priv->abyBBVGA[1] = 0x0A;
@@ -2150,10 +2132,13 @@ bool BBbVT3253Init(struct vnt_private *priv)
 
 	} else if (byRFType == RF_VT3226) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_AIROHA2230; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AIROHA2230[ii][0], byVT3253B0_AIROHA2230[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AIROHA2230[ii][0],
+				byVT3253B0_AIROHA2230[ii][1]);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x1C;
 		priv->abyBBVGA[1] = 0x10;
@@ -2164,24 +2149,30 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[2] = 0;
 		priv->ldBmThreshold[3] = 0;
 		/* Fix VT3226 DFC system timing issue */
-		MACvSetRFLE_LatchBase(dwIoBase);
+		MACvSetRFLE_LatchBase(iobase);
 		/* {{ RobertYu: 20050104 */
 	} else if (byRFType == RF_AIROHA7230) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_AIROHA2230; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AIROHA2230[ii][0], byVT3253B0_AIROHA2230[ii][1]);
-
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AIROHA2230[ii][0],
+				byVT3253B0_AIROHA2230[ii][1]);
 
 		/* {{ RobertYu:20050223, request by JerryChung */
-		/* Init ANT B select,TX Config CR09 = 0x61->0x45, 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x09,0x41);*/
-		/* Init ANT B select,RX Config CR10 = 0x28->0x2A, 0x2A->0x28(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x0a,0x28);*/
+		/* Init ANT B select,TX Config CR09 = 0x61->0x45,
+		 * 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted)
+		 */
+		/*bResult &= BBbWriteEmbedded(iobase,0x09,0x41);*/
+		/* Init ANT B select,RX Config CR10 = 0x28->0x2A,
+		 * 0x2A->0x28(VC1/VC2 define, make the ANT_A, ANT_B inverted)
+		 */
+		/*bResult &= BBbWriteEmbedded(iobase,0x0a,0x28);*/
 		/* Select VC1/VC2, CR215 = 0x02->0x06 */
-		bResult &= BBbWriteEmbedded(dwIoBase, 0xd7, 0x06);
+		bResult &= BBbWriteEmbedded(priv, 0xd7, 0x06);
 		/* }} */
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x1C;
 		priv->abyBBVGA[1] = 0x10;
@@ -2262,7 +2253,7 @@ void BBvSetVGAGainOffset(struct vnt_private *priv, unsigned char byData)
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *  Out:
  *      none
  *
@@ -2283,7 +2274,7 @@ BBvSoftwareReset(struct vnt_private *priv)
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *  Out:
  *      none
  *
@@ -2305,7 +2296,7 @@ BBvPowerSaveModeON(struct vnt_private *priv)
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *  Out:
  *      none
  *
@@ -2411,304 +2402,4 @@ BBvExitDeepSleep(struct vnt_private *priv, unsigned char byLocalID)
 {
 	BBbWriteEmbedded(priv, 0x0C, 0x00); /* CR12 */
 	BBbWriteEmbedded(priv, 0x0D, 0x01); /* CR13 */
-}
-
-static
-unsigned long
-s_ulGetRatio(struct vnt_private *priv)
-{
-	unsigned long ulRatio = 0;
-	unsigned long ulMaxPacket;
-	unsigned long ulPacketNum;
-
-	/* This is a thousand-ratio */
-	ulMaxPacket = priv->uNumSQ3[RATE_54M];
-	if (priv->uNumSQ3[RATE_54M] != 0) {
-		ulPacketNum = priv->uNumSQ3[RATE_54M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_54M;
-	}
-	if (priv->uNumSQ3[RATE_48M] > ulMaxPacket) {
-		ulPacketNum = priv->uNumSQ3[RATE_54M] + priv->uNumSQ3[RATE_48M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_48M;
-		ulMaxPacket = priv->uNumSQ3[RATE_48M];
-	}
-	if (priv->uNumSQ3[RATE_36M] > ulMaxPacket) {
-		ulPacketNum = priv->uNumSQ3[RATE_54M] + priv->uNumSQ3[RATE_48M] +
-			priv->uNumSQ3[RATE_36M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_36M;
-		ulMaxPacket = priv->uNumSQ3[RATE_36M];
-	}
-	if (priv->uNumSQ3[RATE_24M] > ulMaxPacket) {
-		ulPacketNum = priv->uNumSQ3[RATE_54M] + priv->uNumSQ3[RATE_48M] +
-			priv->uNumSQ3[RATE_36M] + priv->uNumSQ3[RATE_24M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_24M;
-		ulMaxPacket = priv->uNumSQ3[RATE_24M];
-	}
-	if (priv->uNumSQ3[RATE_18M] > ulMaxPacket) {
-		ulPacketNum = priv->uNumSQ3[RATE_54M] + priv->uNumSQ3[RATE_48M] +
-			priv->uNumSQ3[RATE_36M] + priv->uNumSQ3[RATE_24M] +
-			priv->uNumSQ3[RATE_18M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_18M;
-		ulMaxPacket = priv->uNumSQ3[RATE_18M];
-	}
-	if (priv->uNumSQ3[RATE_12M] > ulMaxPacket) {
-		ulPacketNum = priv->uNumSQ3[RATE_54M] + priv->uNumSQ3[RATE_48M] +
-			priv->uNumSQ3[RATE_36M] + priv->uNumSQ3[RATE_24M] +
-			priv->uNumSQ3[RATE_18M] + priv->uNumSQ3[RATE_12M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_12M;
-		ulMaxPacket = priv->uNumSQ3[RATE_12M];
-	}
-	if (priv->uNumSQ3[RATE_11M] > ulMaxPacket) {
-		ulPacketNum = priv->uDiversityCnt - priv->uNumSQ3[RATE_1M] -
-			priv->uNumSQ3[RATE_2M] - priv->uNumSQ3[RATE_5M] -
-			priv->uNumSQ3[RATE_6M] - priv->uNumSQ3[RATE_9M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_11M;
-		ulMaxPacket = priv->uNumSQ3[RATE_11M];
-	}
-	if (priv->uNumSQ3[RATE_9M] > ulMaxPacket) {
-		ulPacketNum = priv->uDiversityCnt - priv->uNumSQ3[RATE_1M] -
-			priv->uNumSQ3[RATE_2M] - priv->uNumSQ3[RATE_5M] -
-			priv->uNumSQ3[RATE_6M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_9M;
-		ulMaxPacket = priv->uNumSQ3[RATE_9M];
-	}
-	if (priv->uNumSQ3[RATE_6M] > ulMaxPacket) {
-		ulPacketNum = priv->uDiversityCnt - priv->uNumSQ3[RATE_1M] -
-			priv->uNumSQ3[RATE_2M] - priv->uNumSQ3[RATE_5M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_6M;
-		ulMaxPacket = priv->uNumSQ3[RATE_6M];
-	}
-	if (priv->uNumSQ3[RATE_5M] > ulMaxPacket) {
-		ulPacketNum = priv->uDiversityCnt - priv->uNumSQ3[RATE_1M] -
-			priv->uNumSQ3[RATE_2M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_55M;
-		ulMaxPacket = priv->uNumSQ3[RATE_5M];
-	}
-	if (priv->uNumSQ3[RATE_2M] > ulMaxPacket) {
-		ulPacketNum = priv->uDiversityCnt - priv->uNumSQ3[RATE_1M];
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_2M;
-		ulMaxPacket = priv->uNumSQ3[RATE_2M];
-	}
-	if (priv->uNumSQ3[RATE_1M] > ulMaxPacket) {
-		ulPacketNum = priv->uDiversityCnt;
-		ulRatio = (ulPacketNum * 1000 / priv->uDiversityCnt);
-		ulRatio += TOP_RATE_1M;
-	}
-
-	return ulRatio;
-}
-
-void
-BBvClearAntDivSQ3Value(struct vnt_private *priv)
-{
-	unsigned int ii;
-
-	priv->uDiversityCnt = 0;
-	for (ii = 0; ii < MAX_RATE; ii++)
-		priv->uNumSQ3[ii] = 0;
-}
-
-/*
- * Description: Antenna Diversity
- *
- * Parameters:
- *  In:
- *      priv          - Device Structure
- *      byRSR            - RSR from received packet
- *      bySQ3            - SQ3 value from received packet
- *  Out:
- *      none
- *
- * Return Value: none
- *
- */
-
-void BBvAntennaDiversity(struct vnt_private *priv,
-			 unsigned char byRxRate, unsigned char bySQ3)
-{
-	if ((byRxRate >= MAX_RATE) || (priv->wAntDiversityMaxRate >= MAX_RATE))
-		return;
-
-	priv->uDiversityCnt++;
-
-	priv->uNumSQ3[byRxRate]++;
-
-	if (priv->byAntennaState == 0) {
-		if (priv->uDiversityCnt > priv->ulDiversityNValue) {
-			pr_debug("ulDiversityNValue=[%d],54M-[%d]\n",
-				 (int)priv->ulDiversityNValue,
-				 (int)priv->uNumSQ3[(int)priv->wAntDiversityMaxRate]);
-
-			if (priv->uNumSQ3[priv->wAntDiversityMaxRate] < priv->uDiversityCnt/2) {
-				priv->ulRatio_State0 = s_ulGetRatio(priv);
-				pr_debug("SQ3_State0, rate = [%08x]\n",
-					 (int)priv->ulRatio_State0);
-
-				if (priv->byTMax == 0)
-					return;
-				pr_debug("1.[%08x], uNumSQ3[%d]=%d, %d\n",
-					 (int)priv->ulRatio_State0,
-					 (int)priv->wAntDiversityMaxRate,
-					 (int)priv->uNumSQ3[(int)priv->wAntDiversityMaxRate],
-					 (int)priv->uDiversityCnt);
-
-				s_vChangeAntenna(priv);
-				priv->byAntennaState = 1;
-				del_timer(&priv->TimerSQ3Tmax3);
-				del_timer(&priv->TimerSQ3Tmax2);
-				priv->TimerSQ3Tmax1.expires =  RUN_AT(priv->byTMax * HZ);
-				add_timer(&priv->TimerSQ3Tmax1);
-
-			} else {
-				priv->TimerSQ3Tmax3.expires =  RUN_AT(priv->byTMax3 * HZ);
-				add_timer(&priv->TimerSQ3Tmax3);
-			}
-			BBvClearAntDivSQ3Value(priv);
-
-		}
-	} else { /* byAntennaState == 1 */
-
-		if (priv->uDiversityCnt > priv->ulDiversityMValue) {
-			del_timer(&priv->TimerSQ3Tmax1);
-
-			priv->ulRatio_State1 = s_ulGetRatio(priv);
-			pr_debug("RX:SQ3_State1, rate0 = %08x,rate1 = %08x\n",
-				 (int)priv->ulRatio_State0,
-				 (int)priv->ulRatio_State1);
-
-			if (priv->ulRatio_State1 < priv->ulRatio_State0) {
-				pr_debug("2.[%08x][%08x], uNumSQ3[%d]=%d, %d\n",
-					 (int)priv->ulRatio_State0,
-					 (int)priv->ulRatio_State1,
-					 (int)priv->wAntDiversityMaxRate,
-					 (int)priv->uNumSQ3[(int)priv->wAntDiversityMaxRate],
-					 (int)priv->uDiversityCnt);
-
-				s_vChangeAntenna(priv);
-				priv->TimerSQ3Tmax3.expires =  RUN_AT(priv->byTMax3 * HZ);
-				priv->TimerSQ3Tmax2.expires =  RUN_AT(priv->byTMax2 * HZ);
-				add_timer(&priv->TimerSQ3Tmax3);
-				add_timer(&priv->TimerSQ3Tmax2);
-			}
-			priv->byAntennaState = 0;
-			BBvClearAntDivSQ3Value(priv);
-		}
-	} /* byAntennaState */
-}
-
-/*+
- *
- * Description:
- *  Timer for SQ3 antenna diversity
- *
- * Parameters:
- *  In:
- *  Out:
- *      none
- *
- * Return Value: none
- *
- -*/
-
-void
-TimerSQ3CallBack(
-	unsigned long data
-)
-{
-	struct vnt_private *priv = (struct vnt_private *)data;
-	unsigned long flags;
-
-	pr_debug("TimerSQ3CallBack...\n");
-
-	spin_lock_irqsave(&priv->lock, flags);
-
-	pr_debug("3.[%08x][%08x], %d\n",
-		 (int)priv->ulRatio_State0, (int)priv->ulRatio_State1,
-		 (int)priv->uDiversityCnt);
-
-	s_vChangeAntenna(priv);
-	priv->byAntennaState = 0;
-	BBvClearAntDivSQ3Value(priv);
-
-	priv->TimerSQ3Tmax3.expires =  RUN_AT(priv->byTMax3 * HZ);
-	priv->TimerSQ3Tmax2.expires =  RUN_AT(priv->byTMax2 * HZ);
-	add_timer(&priv->TimerSQ3Tmax3);
-	add_timer(&priv->TimerSQ3Tmax2);
-
-	spin_unlock_irqrestore(&priv->lock, flags);
-}
-
-/*+
- *
- * Description:
- *  Timer for SQ3 antenna diversity
- *
- * Parameters:
- *  In:
- *      pvSysSpec1
- *      hDeviceContext - Pointer to the adapter
- *      pvSysSpec2
- *      pvSysSpec3
- *  Out:
- *      none
- *
- * Return Value: none
- *
- -*/
-
-void
-TimerState1CallBack(
-	unsigned long data
-)
-{
-	struct vnt_private *priv = (struct vnt_private *)data;
-	unsigned long flags;
-
-	pr_debug("TimerState1CallBack...\n");
-
-	spin_lock_irqsave(&priv->lock, flags);
-
-	if (priv->uDiversityCnt < priv->ulDiversityMValue/100) {
-		s_vChangeAntenna(priv);
-		priv->TimerSQ3Tmax3.expires =  RUN_AT(priv->byTMax3 * HZ);
-		priv->TimerSQ3Tmax2.expires =  RUN_AT(priv->byTMax2 * HZ);
-		add_timer(&priv->TimerSQ3Tmax3);
-		add_timer(&priv->TimerSQ3Tmax2);
-	} else {
-		priv->ulRatio_State1 = s_ulGetRatio(priv);
-		pr_debug("SQ3_State1, rate0 = %08x,rate1 = %08x\n",
-			 (int)priv->ulRatio_State0,
-			 (int)priv->ulRatio_State1);
-
-		if (priv->ulRatio_State1 < priv->ulRatio_State0) {
-			pr_debug("2.[%08x][%08x], uNumSQ3[%d]=%d, %d\n",
-				 (int)priv->ulRatio_State0,
-				 (int)priv->ulRatio_State1,
-				 (int)priv->wAntDiversityMaxRate,
-				 (int)priv->uNumSQ3[(int)priv->wAntDiversityMaxRate],
-				 (int)priv->uDiversityCnt);
-
-			s_vChangeAntenna(priv);
-
-			priv->TimerSQ3Tmax3.expires =  RUN_AT(priv->byTMax3 * HZ);
-			priv->TimerSQ3Tmax2.expires =  RUN_AT(priv->byTMax2 * HZ);
-			add_timer(&priv->TimerSQ3Tmax3);
-			add_timer(&priv->TimerSQ3Tmax2);
-		}
-	}
-	priv->byAntennaState = 0;
-	BBvClearAntDivSQ3Value(priv);
-
-	spin_unlock_irqrestore(&priv->lock, flags);
 }

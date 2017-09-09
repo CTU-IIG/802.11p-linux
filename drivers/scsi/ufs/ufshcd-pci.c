@@ -62,12 +62,7 @@ static int ufshcd_pci_resume(struct device *dev)
 {
 	return ufshcd_system_resume(dev_get_drvdata(dev));
 }
-#else
-#define ufshcd_pci_suspend	NULL
-#define ufshcd_pci_resume	NULL
-#endif /* CONFIG_PM */
 
-#ifdef CONFIG_PM_RUNTIME
 static int ufshcd_pci_runtime_suspend(struct device *dev)
 {
 	return ufshcd_runtime_suspend(dev_get_drvdata(dev));
@@ -80,11 +75,13 @@ static int ufshcd_pci_runtime_idle(struct device *dev)
 {
 	return ufshcd_runtime_idle(dev_get_drvdata(dev));
 }
-#else /* !CONFIG_PM_RUNTIME */
+#else /* !CONFIG_PM */
+#define ufshcd_pci_suspend	NULL
+#define ufshcd_pci_resume	NULL
 #define ufshcd_pci_runtime_suspend	NULL
 #define ufshcd_pci_runtime_resume	NULL
 #define ufshcd_pci_runtime_idle	NULL
-#endif /* CONFIG_PM_RUNTIME */
+#endif /* CONFIG_PM */
 
 /**
  * ufshcd_pci_shutdown - main function to put the controller in reset state
@@ -107,6 +104,7 @@ static void ufshcd_pci_remove(struct pci_dev *pdev)
 	pm_runtime_forbid(&pdev->dev);
 	pm_runtime_get_noresume(&pdev->dev);
 	ufshcd_remove(hba);
+	ufshcd_dealloc_host(hba);
 }
 
 /**
@@ -150,6 +148,7 @@ ufshcd_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	err = ufshcd_init(hba, mmio_base, pdev->irq);
 	if (err) {
 		dev_err(&pdev->dev, "Initialization failed\n");
+		ufshcd_dealloc_host(hba);
 		return err;
 	}
 

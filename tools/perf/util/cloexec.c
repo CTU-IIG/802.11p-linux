@@ -1,11 +1,28 @@
+#include <errno.h>
 #include <sched.h>
 #include "util.h"
 #include "../perf.h"
 #include "cloexec.h"
 #include "asm/bug.h"
 #include "debug.h"
+#include <unistd.h>
+#include <asm/unistd.h>
+#include <sys/syscall.h>
 
 static unsigned long flag = PERF_FLAG_FD_CLOEXEC;
+
+int __weak sched_getcpu(void)
+{
+#ifdef __NR_getcpu
+	unsigned cpu;
+	int err = syscall(__NR_getcpu, &cpu, NULL, NULL);
+	if (!err)
+		return cpu;
+#else
+	errno = ENOSYS;
+#endif
+	return -1;
+}
 
 static int perf_flag_probe(void)
 {
@@ -25,6 +42,10 @@ static int perf_flag_probe(void)
 	if (cpu < 0)
 		cpu = 0;
 
+	/*
+	 * Using -1 for the pid is a workaround to avoid gratuitous jump label
+	 * changes.
+	 */
 	while (1) {
 		/* check cloexec flag */
 		fd = sys_perf_event_open(&attr, pid, cpu, -1,
@@ -44,18 +65,26 @@ static int perf_flag_probe(void)
 
 	WARN_ONCE(err != EINVAL && err != EBUSY,
 		  "perf_event_open(..., PERF_FLAG_FD_CLOEXEC) failed with unexpected error %d (%s)\n",
-		  err, strerror_r(err, sbuf, sizeof(sbuf)));
+		  err, str_error_r(err, sbuf, sizeof(sbuf)));
 
 	/* not supported, confirm error related to PERF_FLAG_FD_CLOEXEC */
-	fd = sys_perf_event_open(&attr, pid, cpu, -1, 0);
+	while (1) {
+		fd = sys_perf_event_open(&attr, pid, cpu, -1, 0);
+		if (fd < 0 && pid == -1 && errno == EACCES) {
+			pid = 0;
+			continue;
+		}
+		break;
+	}
 	err = errno;
+
+	if (fd >= 0)
+		close(fd);
 
 	if (WARN_ONCE(fd < 0 && err != EBUSY,
 		      "perf_event_open(..., 0) failed unexpectedly with error %d (%s)\n",
-		      err, strerror_r(err, sbuf, sizeof(sbuf))))
+		      err, str_error_r(err, sbuf, sizeof(sbuf))))
 		return -1;
-
-	close(fd);
 
 	return 0;
 }

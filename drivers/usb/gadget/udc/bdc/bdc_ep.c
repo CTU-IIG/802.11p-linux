@@ -81,7 +81,7 @@ static void ep_bd_list_free(struct bdc_ep *ep, u32 num_tabs)
 			continue;
 		}
 		if (!bd_table->start_bd) {
-			dev_dbg(bdc->dev, "bd dma pool not allocted\n");
+			dev_dbg(bdc->dev, "bd dma pool not allocated\n");
 			continue;
 		}
 
@@ -159,8 +159,10 @@ static int ep_bd_list_alloc(struct bdc_ep *ep)
 		bd_table->start_bd = dma_pool_alloc(bdc->bd_table_pool,
 							GFP_ATOMIC,
 							&dma);
-		if (!bd_table->start_bd)
+		if (!bd_table->start_bd) {
+			kfree(bd_table);
 			goto fail;
+		}
 
 		bd_table->dma = dma;
 
@@ -444,7 +446,7 @@ static int setup_bd_list_xfr(struct bdc *bdc, struct bdc_req *req, int num_bds)
 	bd_xfr->start_bdi = bd_list->eqp_bdi;
 	bd = bdi_to_bd(ep, bd_list->eqp_bdi);
 	req_len = req->usb_req.length;
-	maxp = usb_endpoint_maxp(ep->desc) & 0x7ff;
+	maxp = usb_endpoint_maxp(ep->desc);
 	tfs = roundup(req->usb_req.length, maxp);
 	tfs = tfs/maxp;
 	dev_vdbg(bdc->dev, "%s ep:%s num_bds:%d tfs:%d r_len:%d bd:%p\n",
@@ -700,11 +702,9 @@ static int ep0_queue(struct bdc_ep *ep, struct bdc_req *req)
 /* Queue data stage */
 static int ep0_queue_data_stage(struct bdc *bdc)
 {
-	struct usb_request *ep0_usb_req;
 	struct bdc_ep *ep;
 
 	dev_dbg(bdc->dev, "%s\n", __func__);
-	ep0_usb_req = &bdc->ep0_req.usb_req;
 	ep = bdc->bdc_ep_array[1];
 	bdc->ep0_req.ep = ep;
 	bdc->ep0_req.usb_req.complete = NULL;
@@ -718,9 +718,10 @@ static int ep_queue(struct bdc_ep *ep, struct bdc_req *req)
 	struct bdc *bdc;
 	int ret = 0;
 
-	bdc = ep->bdc;
-	if (!req || !ep || !ep->usb_ep.desc)
+	if (!req || !ep->usb_ep.desc)
 		return -EINVAL;
+
+	bdc = ep->bdc;
 
 	req->usb_req.actual = 0;
 	req->usb_req.status = -EINPROGRESS;
@@ -778,7 +779,7 @@ static int ep_dequeue(struct bdc_ep *ep, struct bdc_req *req)
 	/* The current hw dequeue pointer */
 	tmp_32 = bdc_readl(bdc->regs, BDC_EPSTS0(0));
 	deq_ptr_64 = tmp_32;
-	tmp_32 = bdc_readl(bdc->regs, BDC_EPSTS0(1));
+	tmp_32 = bdc_readl(bdc->regs, BDC_EPSTS1(0));
 	deq_ptr_64 |= ((u64)tmp_32 << 32);
 
 	/* we have the dma addr of next bd that will be fetched by hardware */
@@ -881,8 +882,8 @@ static int ep_set_halt(struct bdc_ep *ep, u32 value)
 
 		ret = bdc_ep_set_stall(bdc, ep->ep_num);
 		if (ret)
-			dev_err(bdc->dev, "failed to %s STALL on %s\n",
-				value ? "set" : "clear", ep->name);
+			dev_err(bdc->dev, "failed to set STALL on %s\n",
+				ep->name);
 		else
 			ep->flags |= BDC_EP_STALL;
 	} else {
@@ -890,8 +891,8 @@ static int ep_set_halt(struct bdc_ep *ep, u32 value)
 		dev_dbg(bdc->dev, "Before Clear\n");
 		ret = bdc_ep_clear_stall(bdc, ep->ep_num);
 		if (ret)
-			dev_err(bdc->dev, "failed to %s STALL on %s\n",
-				value ? "set" : "clear", ep->name);
+			dev_err(bdc->dev, "failed to clear STALL on %s\n",
+				ep->name);
 		else
 			ep->flags &= ~BDC_EP_STALL;
 		dev_dbg(bdc->dev, "After  Clear\n");
@@ -1390,10 +1391,8 @@ static int ep0_set_sel(struct bdc *bdc,
 {
 	struct bdc_ep	*ep;
 	u16	wLength;
-	u16	wValue;
 
 	dev_dbg(bdc->dev, "%s\n", __func__);
-	wValue = le16_to_cpu(setup_pkt->wValue);
 	wLength = le16_to_cpu(setup_pkt->wLength);
 	if (unlikely(wLength != 6)) {
 		dev_err(bdc->dev, "%s Wrong wLength:%d\n", __func__, wLength);
@@ -1951,12 +1950,18 @@ static int init_ep(struct bdc *bdc, u32 epnum, u32 dir)
 	ep->bdc = bdc;
 	ep->dir = dir;
 
+	if (dir)
+		ep->usb_ep.caps.dir_in = true;
+	else
+		ep->usb_ep.caps.dir_out = true;
+
 	/* ep->ep_num is the index inside bdc_ep */
 	if (epnum == 1) {
 		ep->ep_num = 1;
 		bdc->bdc_ep_array[ep->ep_num] = ep;
 		snprintf(ep->name, sizeof(ep->name), "ep%d", epnum - 1);
 		usb_ep_set_maxpacket_limit(&ep->usb_ep, EP0_MAX_PKT_SIZE);
+		ep->usb_ep.caps.type_control = true;
 		ep->comp_desc = NULL;
 		bdc->gadget.ep0 = &ep->usb_ep;
 	} else {
@@ -1970,6 +1975,9 @@ static int init_ep(struct bdc *bdc, u32 epnum, u32 dir)
 			 dir & 1 ? "in" : "out");
 
 		usb_ep_set_maxpacket_limit(&ep->usb_ep, 1024);
+		ep->usb_ep.caps.type_iso = true;
+		ep->usb_ep.caps.type_bulk = true;
+		ep->usb_ep.caps.type_int = true;
 		ep->usb_ep.max_streams = 0;
 		list_add_tail(&ep->usb_ep.ep_list, &bdc->gadget.ep_list);
 	}

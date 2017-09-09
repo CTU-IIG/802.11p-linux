@@ -21,7 +21,7 @@ static const
 struct nla_policy wlcore_vendor_attr_policy[NUM_WLCORE_VENDOR_ATTR] = {
 	[WLCORE_VENDOR_ATTR_FREQ]		= { .type = NLA_U32 },
 	[WLCORE_VENDOR_ATTR_GROUP_ID]		= { .type = NLA_U32 },
-	[WLCORE_VENDOR_ATTR_GROUP_KEY]		= { .type = NLA_U32,
+	[WLCORE_VENDOR_ATTR_GROUP_KEY]		= { .type = NLA_BINARY,
 						    .len = WLAN_MAX_KEY_LEN },
 };
 
@@ -41,7 +41,7 @@ wlcore_vendor_cmd_smart_config_start(struct wiphy *wiphy,
 		return -EINVAL;
 
 	ret = nla_parse(tb, MAX_WLCORE_VENDOR_ATTR, data, data_len,
-			wlcore_vendor_attr_policy);
+			wlcore_vendor_attr_policy, NULL);
 	if (ret)
 		return ret;
 
@@ -116,7 +116,7 @@ wlcore_vendor_cmd_smart_config_set_group_key(struct wiphy *wiphy,
 		return -EINVAL;
 
 	ret = nla_parse(tb, MAX_WLCORE_VENDOR_ATTR, data, data_len,
-			wlcore_vendor_attr_policy);
+			wlcore_vendor_attr_policy, NULL);
 	if (ret)
 		return ret;
 

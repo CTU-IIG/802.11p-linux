@@ -6,6 +6,7 @@
 #include <linux/list.h>
 #include <linux/stddef.h>
 #include <linux/spinlock.h>
+
 #include <asm/current.h>
 #include <uapi/linux/wait.h>
 
@@ -102,9 +103,60 @@ init_waitqueue_func_entry(wait_queue_t *q, wait_queue_func_t func)
 	q->func		= func;
 }
 
+/**
+ * waitqueue_active -- locklessly test for waiters on the queue
+ * @q: the waitqueue to test for waiters
+ *
+ * returns true if the wait list is not empty
+ *
+ * NOTE: this function is lockless and requires care, incorrect usage _will_
+ * lead to sporadic and non-obvious failure.
+ *
+ * Use either while holding wait_queue_head_t::lock or when used for wakeups
+ * with an extra smp_mb() like:
+ *
+ *      CPU0 - waker                    CPU1 - waiter
+ *
+ *                                      for (;;) {
+ *      @cond = true;                     prepare_to_wait(&wq, &wait, state);
+ *      smp_mb();                         // smp_mb() from set_current_state()
+ *      if (waitqueue_active(wq))         if (@cond)
+ *        wake_up(wq);                      break;
+ *                                        schedule();
+ *                                      }
+ *                                      finish_wait(&wq, &wait);
+ *
+ * Because without the explicit smp_mb() it's possible for the
+ * waitqueue_active() load to get hoisted over the @cond store such that we'll
+ * observe an empty wait list while the waiter might not observe @cond.
+ *
+ * Also note that this 'optimization' trades a spin_lock() for an smp_mb(),
+ * which (when the lock is uncontended) are of roughly equal cost.
+ */
 static inline int waitqueue_active(wait_queue_head_t *q)
 {
 	return !list_empty(&q->task_list);
+}
+
+/**
+ * wq_has_sleeper - check if there are any waiting processes
+ * @wq: wait queue head
+ *
+ * Returns true if wq has waiting processes
+ *
+ * Please refer to the comment for waitqueue_active.
+ */
+static inline bool wq_has_sleeper(wait_queue_head_t *wq)
+{
+	/*
+	 * We need to be sure we are in sync with the
+	 * add_wait_queue modifications to the wait queue.
+	 *
+	 * This memory barrier should be paired with one on the
+	 * waiting side.
+	 */
+	smp_mb();
+	return waitqueue_active(wq);
 }
 
 extern void add_wait_queue(wait_queue_head_t *q, wait_queue_t *wait);
@@ -145,7 +197,7 @@ __remove_wait_queue(wait_queue_head_t *head, wait_queue_t *old)
 	list_del(&old->task_list);
 }
 
-typedef int wait_bit_action_f(struct wait_bit_key *);
+typedef int wait_bit_action_f(struct wait_bit_key *, int mode);
 void __wake_up(wait_queue_head_t *q, unsigned int mode, int nr, void *key);
 void __wake_up_locked_key(wait_queue_head_t *q, unsigned int mode, void *key);
 void __wake_up_sync_key(wait_queue_head_t *q, unsigned int mode, int nr, void *key);
@@ -197,6 +249,8 @@ wait_queue_head_t *bit_waitqueue(void *, int);
 	(!__builtin_constant_p(state) ||				\
 		state == TASK_INTERRUPTIBLE || state == TASK_KILLABLE)	\
 
+extern void init_wait_entry(wait_queue_t *__wait, int flags);
+
 /*
  * The below macro ___wait_event() has an explicit shadow of the __ret
  * variable when used from the wait_event_*() macros.
@@ -215,12 +269,7 @@ wait_queue_head_t *bit_waitqueue(void *, int);
 	wait_queue_t __wait;						\
 	long __ret = ret;	/* explicit shadow */			\
 									\
-	INIT_LIST_HEAD(&__wait.task_list);				\
-	if (exclusive)							\
-		__wait.flags = WQ_FLAG_EXCLUSIVE;			\
-	else								\
-		__wait.flags = 0;					\
-									\
+	init_wait_entry(&__wait, exclusive ? WQ_FLAG_EXCLUSIVE : 0);	\
 	for (;;) {							\
 		long __int = prepare_to_wait_event(&wq, &__wait, state);\
 									\
@@ -229,12 +278,7 @@ wait_queue_head_t *bit_waitqueue(void *, int);
 									\
 		if (___wait_is_interruptible(state) && __int) {		\
 			__ret = __int;					\
-			if (exclusive) {				\
-				abort_exclusive_wait(&wq, &__wait,	\
-						     state, NULL);	\
-				goto __out;				\
-			}						\
-			break;						\
+			goto __out;					\
 		}							\
 									\
 		cmd;							\
@@ -267,12 +311,27 @@ do {									\
 	__wait_event(wq, condition);					\
 } while (0)
 
+#define __io_wait_event(wq, condition)					\
+	(void)___wait_event(wq, condition, TASK_UNINTERRUPTIBLE, 0, 0,	\
+			    io_schedule())
+
+/*
+ * io_wait_event() -- like wait_event() but with io_schedule()
+ */
+#define io_wait_event(wq, condition)					\
+do {									\
+	might_sleep();							\
+	if (condition)							\
+		break;							\
+	__io_wait_event(wq, condition);					\
+} while (0)
+
 #define __wait_event_freezable(wq, condition)				\
 	___wait_event(wq, condition, TASK_INTERRUPTIBLE, 0, 0,		\
 			    schedule(); try_to_freeze())
 
 /**
- * wait_event - sleep (or freeze) until a condition gets true
+ * wait_event_freezable - sleep (or freeze) until a condition gets true
  * @wq: the waitqueue to wait on
  * @condition: a C expression for the event to wait for
  *
@@ -343,6 +402,19 @@ do {									\
 	__ret;								\
 })
 
+#define __wait_event_exclusive_cmd(wq, condition, cmd1, cmd2)		\
+	(void)___wait_event(wq, condition, TASK_UNINTERRUPTIBLE, 1, 0,	\
+			    cmd1; schedule(); cmd2)
+/*
+ * Just like wait_event_cmd(), except it sets exclusive flag
+ */
+#define wait_event_exclusive_cmd(wq, condition, cmd1, cmd2)		\
+do {									\
+	if (condition)							\
+		break;							\
+	__wait_event_exclusive_cmd(wq, condition, cmd1, cmd2);		\
+} while (0)
+
 #define __wait_event_cmd(wq, condition, cmd1, cmd2)			\
 	(void)___wait_event(wq, condition, TASK_UNINTERRUPTIBLE, 0, 0,	\
 			    cmd1; schedule(); cmd2)
@@ -363,7 +435,6 @@ do {									\
  */
 #define wait_event_cmd(wq, condition, cmd1, cmd2)			\
 do {									\
-	might_sleep();							\
 	if (condition)							\
 		break;							\
 	__wait_event_cmd(wq, condition, cmd1, cmd2);			\
@@ -440,7 +511,7 @@ do {									\
 	hrtimer_init_on_stack(&__t.timer, CLOCK_MONOTONIC,		\
 			      HRTIMER_MODE_REL);			\
 	hrtimer_init_sleeper(&__t, current);				\
-	if ((timeout).tv64 != KTIME_MAX)				\
+	if ((timeout) != KTIME_MAX)				\
 		hrtimer_start_range_ns(&__t.timer, timeout,		\
 				       current->timer_slack_ns,		\
 				       HRTIMER_MODE_REL);		\
@@ -522,6 +593,19 @@ do {									\
 	__ret;								\
 })
 
+#define __wait_event_killable_exclusive(wq, condition)			\
+	___wait_event(wq, condition, TASK_KILLABLE, 1, 0,		\
+		      schedule())
+
+#define wait_event_killable_exclusive(wq, condition)			\
+({									\
+	int __ret = 0;							\
+	might_sleep();							\
+	if (!(condition))						\
+		__ret = __wait_event_killable_exclusive(wq, condition);	\
+	__ret;								\
+})
+
 
 #define __wait_event_freezable_exclusive(wq, condition)			\
 	___wait_event(wq, condition, TASK_INTERRUPTIBLE, 1, 0,		\
@@ -536,30 +620,19 @@ do {									\
 	__ret;								\
 })
 
+extern int do_wait_intr(wait_queue_head_t *, wait_queue_t *);
+extern int do_wait_intr_irq(wait_queue_head_t *, wait_queue_t *);
 
-#define __wait_event_interruptible_locked(wq, condition, exclusive, irq) \
+#define __wait_event_interruptible_locked(wq, condition, exclusive, fn) \
 ({									\
-	int __ret = 0;							\
+	int __ret;							\
 	DEFINE_WAIT(__wait);						\
 	if (exclusive)							\
 		__wait.flags |= WQ_FLAG_EXCLUSIVE;			\
 	do {								\
-		if (likely(list_empty(&__wait.task_list)))		\
-			__add_wait_queue_tail(&(wq), &__wait);		\
-		set_current_state(TASK_INTERRUPTIBLE);			\
-		if (signal_pending(current)) {				\
-			__ret = -ERESTARTSYS;				\
+		__ret = fn(&(wq), &__wait);				\
+		if (__ret)						\
 			break;						\
-		}							\
-		if (irq)						\
-			spin_unlock_irq(&(wq).lock);			\
-		else							\
-			spin_unlock(&(wq).lock);			\
-		schedule();						\
-		if (irq)						\
-			spin_lock_irq(&(wq).lock);			\
-		else							\
-			spin_lock(&(wq).lock);				\
 	} while (!(condition));						\
 	__remove_wait_queue(&(wq), &__wait);				\
 	__set_current_state(TASK_RUNNING);				\
@@ -592,7 +665,7 @@ do {									\
  */
 #define wait_event_interruptible_locked(wq, condition)			\
 	((condition)							\
-	 ? 0 : __wait_event_interruptible_locked(wq, condition, 0, 0))
+	 ? 0 : __wait_event_interruptible_locked(wq, condition, 0, do_wait_intr))
 
 /**
  * wait_event_interruptible_locked_irq - sleep until a condition gets true
@@ -619,7 +692,7 @@ do {									\
  */
 #define wait_event_interruptible_locked_irq(wq, condition)		\
 	((condition)							\
-	 ? 0 : __wait_event_interruptible_locked(wq, condition, 0, 1))
+	 ? 0 : __wait_event_interruptible_locked(wq, condition, 0, do_wait_intr_irq))
 
 /**
  * wait_event_interruptible_exclusive_locked - sleep exclusively until a condition gets true
@@ -650,7 +723,7 @@ do {									\
  */
 #define wait_event_interruptible_exclusive_locked(wq, condition)	\
 	((condition)							\
-	 ? 0 : __wait_event_interruptible_locked(wq, condition, 1, 0))
+	 ? 0 : __wait_event_interruptible_locked(wq, condition, 1, do_wait_intr))
 
 /**
  * wait_event_interruptible_exclusive_locked_irq - sleep until a condition gets true
@@ -681,7 +754,7 @@ do {									\
  */
 #define wait_event_interruptible_exclusive_locked_irq(wq, condition)	\
 	((condition)							\
-	 ? 0 : __wait_event_interruptible_locked(wq, condition, 1, 1))
+	 ? 0 : __wait_event_interruptible_locked(wq, condition, 1, do_wait_intr_irq))
 
 
 #define __wait_event_killable(wq, condition)				\
@@ -898,7 +971,6 @@ void prepare_to_wait(wait_queue_head_t *q, wait_queue_t *wait, int state);
 void prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_t *wait, int state);
 long prepare_to_wait_event(wait_queue_head_t *q, wait_queue_t *wait, int state);
 void finish_wait(wait_queue_head_t *q, wait_queue_t *wait);
-void abort_exclusive_wait(wait_queue_head_t *q, wait_queue_t *wait, unsigned int mode, void *key);
 long wait_woken(wait_queue_t *wait, unsigned mode, long timeout);
 int woken_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
 int autoremove_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
@@ -933,10 +1005,10 @@ int wake_bit_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
 	} while (0)
 
 
-extern int bit_wait(struct wait_bit_key *);
-extern int bit_wait_io(struct wait_bit_key *);
-extern int bit_wait_timeout(struct wait_bit_key *);
-extern int bit_wait_io_timeout(struct wait_bit_key *);
+extern int bit_wait(struct wait_bit_key *, int);
+extern int bit_wait_io(struct wait_bit_key *, int);
+extern int bit_wait_timeout(struct wait_bit_key *, int);
+extern int bit_wait_io_timeout(struct wait_bit_key *, int);
 
 /**
  * wait_on_bit - wait for a bit to be cleared
@@ -955,7 +1027,7 @@ extern int bit_wait_io_timeout(struct wait_bit_key *);
  * on that signal.
  */
 static inline int
-wait_on_bit(void *word, int bit, unsigned mode)
+wait_on_bit(unsigned long *word, int bit, unsigned mode)
 {
 	might_sleep();
 	if (!test_bit(bit, word))
@@ -980,7 +1052,7 @@ wait_on_bit(void *word, int bit, unsigned mode)
  * on that signal.
  */
 static inline int
-wait_on_bit_io(void *word, int bit, unsigned mode)
+wait_on_bit_io(unsigned long *word, int bit, unsigned mode)
 {
 	might_sleep();
 	if (!test_bit(bit, word))
@@ -988,6 +1060,33 @@ wait_on_bit_io(void *word, int bit, unsigned mode)
 	return out_of_line_wait_on_bit(word, bit,
 				       bit_wait_io,
 				       mode);
+}
+
+/**
+ * wait_on_bit_timeout - wait for a bit to be cleared or a timeout elapses
+ * @word: the word being waited on, a kernel virtual address
+ * @bit: the bit of the word being waited on
+ * @mode: the task state to sleep in
+ * @timeout: timeout, in jiffies
+ *
+ * Use the standard hashed waitqueue table to wait for a bit
+ * to be cleared. This is similar to wait_on_bit(), except also takes a
+ * timeout parameter.
+ *
+ * Returned value will be zero if the bit was cleared before the
+ * @timeout elapsed, or non-zero if the @timeout elapsed or process
+ * received a signal and the mode permitted wakeup on that signal.
+ */
+static inline int
+wait_on_bit_timeout(unsigned long *word, int bit, unsigned mode,
+		    unsigned long timeout)
+{
+	might_sleep();
+	if (!test_bit(bit, word))
+		return 0;
+	return out_of_line_wait_on_bit_timeout(word, bit,
+					       bit_wait_timeout,
+					       mode, timeout);
 }
 
 /**
@@ -1007,7 +1106,8 @@ wait_on_bit_io(void *word, int bit, unsigned mode)
  * on that signal.
  */
 static inline int
-wait_on_bit_action(void *word, int bit, wait_bit_action_f *action, unsigned mode)
+wait_on_bit_action(unsigned long *word, int bit, wait_bit_action_f *action,
+		   unsigned mode)
 {
 	might_sleep();
 	if (!test_bit(bit, word))
@@ -1035,7 +1135,7 @@ wait_on_bit_action(void *word, int bit, wait_bit_action_f *action, unsigned mode
  * the @mode allows that signal to wake the process.
  */
 static inline int
-wait_on_bit_lock(void *word, int bit, unsigned mode)
+wait_on_bit_lock(unsigned long *word, int bit, unsigned mode)
 {
 	might_sleep();
 	if (!test_and_set_bit(bit, word))
@@ -1059,7 +1159,7 @@ wait_on_bit_lock(void *word, int bit, unsigned mode)
  * the @mode allows that signal to wake the process.
  */
 static inline int
-wait_on_bit_lock_io(void *word, int bit, unsigned mode)
+wait_on_bit_lock_io(unsigned long *word, int bit, unsigned mode)
 {
 	might_sleep();
 	if (!test_and_set_bit(bit, word))
@@ -1085,7 +1185,8 @@ wait_on_bit_lock_io(void *word, int bit, unsigned mode)
  * the @mode allows that signal to wake the process.
  */
 static inline int
-wait_on_bit_lock_action(void *word, int bit, wait_bit_action_f *action, unsigned mode)
+wait_on_bit_lock_action(unsigned long *word, int bit, wait_bit_action_f *action,
+			unsigned mode)
 {
 	might_sleep();
 	if (!test_and_set_bit(bit, word))

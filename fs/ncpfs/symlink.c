@@ -21,7 +21,7 @@
  */
 
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -156,7 +156,7 @@ int ncp_symlink(struct inode *dir, struct dentry *dentry, const char *symname) {
 		goto failfree;
 	}
 
-	inode=dentry->d_inode;
+	inode=d_inode(dentry);
 
 	if (ncp_make_open(inode, O_WRONLY))
 		goto failfree;

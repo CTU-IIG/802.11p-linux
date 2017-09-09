@@ -210,8 +210,6 @@ static int gp2a_remove(struct i2c_client *client)
 	struct gp2a_data *dt = i2c_get_clientdata(client);
 	const struct gp2a_platform_data *pdata = dt->pdata;
 
-	device_init_wakeup(&client->dev, false);
-
 	free_irq(client->irq, dt);
 
 	input_unregister_device(dt->input);
@@ -267,11 +265,11 @@ static const struct i2c_device_id gp2a_i2c_id[] = {
 	{ GP2A_I2C_NAME, 0 },
 	{ }
 };
+MODULE_DEVICE_TABLE(i2c, gp2a_i2c_id);
 
 static struct i2c_driver gp2a_i2c_driver = {
 	.driver = {
 		.name	= GP2A_I2C_NAME,
-		.owner	= THIS_MODULE,
 		.pm	= &gp2a_pm,
 	},
 	.probe		= gp2a_probe,

@@ -23,6 +23,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/socket.h>
 #include <net/sock.h>
@@ -771,7 +772,8 @@ static void pep_sock_close(struct sock *sk, long timeout)
 	sock_put(sk);
 }
 
-static struct sock *pep_sock_accept(struct sock *sk, int flags, int *errp)
+static struct sock *pep_sock_accept(struct sock *sk, int flags, int *errp,
+				    bool kern)
 {
 	struct pep_sock *pn = pep_sk(sk), *newpn;
 	struct sock *newsk = NULL;
@@ -845,7 +847,8 @@ static struct sock *pep_sock_accept(struct sock *sk, int flags, int *errp)
 	}
 
 	/* Create a new to-be-accepted sock */
-	newsk = sk_alloc(sock_net(sk), PF_PHONET, GFP_KERNEL, sk->sk_prot);
+	newsk = sk_alloc(sock_net(sk), PF_PHONET, GFP_KERNEL, sk->sk_prot,
+			 kern);
 	if (!newsk) {
 		pep_reject_conn(sk, skb, PN_PIPE_ERR_OVERLOAD, GFP_KERNEL);
 		err = -ENOBUFS;
@@ -1118,8 +1121,7 @@ static int pipe_skb_send(struct sock *sk, struct sk_buff *skb)
 
 }
 
-static int pep_sendmsg(struct kiocb *iocb, struct sock *sk,
-			struct msghdr *msg, size_t len)
+static int pep_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 {
 	struct pep_sock *pn = pep_sk(sk);
 	struct sk_buff *skb;
@@ -1168,7 +1170,7 @@ disabled:
 	/* Wait until flow control allows TX */
 	done = atomic_read(&pn->tx_credits);
 	while (!done) {
-		DEFINE_WAIT(wait);
+		DEFINE_WAIT_FUNC(wait, woken_wake_function);
 
 		if (!timeo) {
 			err = -EAGAIN;
@@ -1179,10 +1181,9 @@ disabled:
 			goto out;
 		}
 
-		prepare_to_wait(sk_sleep(sk), &wait,
-				TASK_INTERRUPTIBLE);
-		done = sk_wait_event(sk, &timeo, atomic_read(&pn->tx_credits));
-		finish_wait(sk_sleep(sk), &wait);
+		add_wait_queue(sk_sleep(sk), &wait);
+		done = sk_wait_event(sk, &timeo, atomic_read(&pn->tx_credits), &wait);
+		remove_wait_queue(sk_sleep(sk), &wait);
 
 		if (sk->sk_state != TCP_ESTABLISHED)
 			goto disabled;
@@ -1246,9 +1247,8 @@ struct sk_buff *pep_read(struct sock *sk)
 	return skb;
 }
 
-static int pep_recvmsg(struct kiocb *iocb, struct sock *sk,
-			struct msghdr *msg, size_t len, int noblock,
-			int flags, int *addr_len)
+static int pep_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
+		       int noblock, int flags, int *addr_len)
 {
 	struct sk_buff *skb;
 	int err;

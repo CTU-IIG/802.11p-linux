@@ -324,8 +324,7 @@ static void bdc_mem_free(struct bdc *bdc)
 				bdc->scratchpad.buff, bdc->scratchpad.sp_dma);
 
 	/* Destroy the dma pools */
-	if (bdc->bd_table_pool)
-		dma_pool_destroy(bdc->bd_table_pool);
+	dma_pool_destroy(bdc->bd_table_pool);
 
 	/* Free the bdc_ep array */
 	kfree(bdc->bdc_ep_array);
@@ -521,7 +520,6 @@ static int bdc_remove(struct platform_device *pdev)
 static struct platform_driver bdc_driver = {
 	.driver		= {
 		.name	= BRCM_BDC_NAME,
-		.owner	= THIS_MODULE
 	},
 	.probe		= bdc_probe,
 	.remove		= bdc_remove,

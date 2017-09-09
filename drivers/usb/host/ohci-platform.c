@@ -33,12 +33,14 @@
 
 #define DRIVER_DESC "OHCI generic platform driver"
 #define OHCI_MAX_CLKS 3
+#define OHCI_MAX_RESETS 2
 #define hcd_to_ohci_priv(h) ((struct ohci_platform_priv *)hcd_to_ohci(h)->priv)
 
 struct ohci_platform_priv {
 	struct clk *clks[OHCI_MAX_CLKS];
-	struct reset_control *rst;
-	struct phy *phy;
+	struct reset_control *resets[OHCI_MAX_RESETS];
+	struct phy **phys;
+	int num_phys;
 };
 
 static const char hcd_name[] = "ohci-platform";
@@ -47,7 +49,7 @@ static int ohci_platform_power_on(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct ohci_platform_priv *priv = hcd_to_ohci_priv(hcd);
-	int clk, ret;
+	int clk, ret, phy_num;
 
 	for (clk = 0; clk < OHCI_MAX_CLKS && priv->clks[clk]; clk++) {
 		ret = clk_prepare_enable(priv->clks[clk]);
@@ -55,20 +57,24 @@ static int ohci_platform_power_on(struct platform_device *dev)
 			goto err_disable_clks;
 	}
 
-	if (priv->phy) {
-		ret = phy_init(priv->phy);
-		if (ret)
-			goto err_disable_clks;
-
-		ret = phy_power_on(priv->phy);
+	for (phy_num = 0; phy_num < priv->num_phys; phy_num++) {
+		ret = phy_init(priv->phys[phy_num]);
 		if (ret)
 			goto err_exit_phy;
+		ret = phy_power_on(priv->phys[phy_num]);
+		if (ret) {
+			phy_exit(priv->phys[phy_num]);
+			goto err_exit_phy;
+		}
 	}
 
 	return 0;
 
 err_exit_phy:
-	phy_exit(priv->phy);
+	while (--phy_num >= 0) {
+		phy_power_off(priv->phys[phy_num]);
+		phy_exit(priv->phys[phy_num]);
+	}
 err_disable_clks:
 	while (--clk >= 0)
 		clk_disable_unprepare(priv->clks[clk]);
@@ -80,11 +86,11 @@ static void ohci_platform_power_off(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct ohci_platform_priv *priv = hcd_to_ohci_priv(hcd);
-	int clk;
+	int clk, phy_num;
 
-	if (priv->phy) {
-		phy_power_off(priv->phy);
-		phy_exit(priv->phy);
+	for (phy_num = 0; phy_num < priv->num_phys; phy_num++) {
+		phy_power_off(priv->phys[phy_num]);
+		phy_exit(priv->phys[phy_num]);
 	}
 
 	for (clk = OHCI_MAX_CLKS - 1; clk >= 0; clk--)
@@ -112,7 +118,7 @@ static int ohci_platform_probe(struct platform_device *dev)
 	struct usb_ohci_pdata *pdata = dev_get_platdata(&dev->dev);
 	struct ohci_platform_priv *priv;
 	struct ohci_hcd *ohci;
-	int err, irq, clk = 0;
+	int err, irq, phy_num, clk = 0, rst = 0;
 
 	if (usb_disabled())
 		return -ENODEV;
@@ -160,12 +166,24 @@ static int ohci_platform_probe(struct platform_device *dev)
 		of_property_read_u32(dev->dev.of_node, "num-ports",
 				     &ohci->num_ports);
 
-		priv->phy = devm_phy_get(&dev->dev, "usb");
-		if (IS_ERR(priv->phy)) {
-			err = PTR_ERR(priv->phy);
-			if (err == -EPROBE_DEFER)
+		priv->num_phys = of_count_phandle_with_args(dev->dev.of_node,
+				"phys", "#phy-cells");
+
+		if (priv->num_phys > 0) {
+			priv->phys = devm_kcalloc(&dev->dev, priv->num_phys,
+					    sizeof(struct phy *), GFP_KERNEL);
+			if (!priv->phys)
+				return -ENOMEM;
+		} else
+			priv->num_phys = 0;
+
+		for (phy_num = 0; phy_num < priv->num_phys; phy_num++) {
+			priv->phys[phy_num] = devm_of_phy_get_by_index(
+					&dev->dev, dev->dev.of_node, phy_num);
+			if (IS_ERR(priv->phys[phy_num])) {
+				err = PTR_ERR(priv->phys[phy_num]);
 				goto err_put_hcd;
-			priv->phy = NULL;
+			}
 		}
 
 		for (clk = 0; clk < OHCI_MAX_CLKS; clk++) {
@@ -178,19 +196,21 @@ static int ohci_platform_probe(struct platform_device *dev)
 				break;
 			}
 		}
-
-	}
-
-	priv->rst = devm_reset_control_get_optional(&dev->dev, NULL);
-	if (IS_ERR(priv->rst)) {
-		err = PTR_ERR(priv->rst);
-		if (err == -EPROBE_DEFER)
-			goto err_put_clks;
-		priv->rst = NULL;
-	} else {
-		err = reset_control_deassert(priv->rst);
-		if (err)
-			goto err_put_clks;
+		for (rst = 0; rst < OHCI_MAX_RESETS; rst++) {
+			priv->resets[rst] =
+				devm_reset_control_get_shared_by_index(
+								&dev->dev, rst);
+			if (IS_ERR(priv->resets[rst])) {
+				err = PTR_ERR(priv->resets[rst]);
+				if (err == -EPROBE_DEFER)
+					goto err_reset;
+				priv->resets[rst] = NULL;
+				break;
+			}
+			err = reset_control_deassert(priv->resets[rst]);
+			if (err)
+				goto err_reset;
+		}
 	}
 
 	if (pdata->big_endian_desc)
@@ -248,8 +268,8 @@ err_power:
 	if (pdata->power_off)
 		pdata->power_off(dev);
 err_reset:
-	if (priv->rst)
-		reset_control_assert(priv->rst);
+	while (--rst >= 0)
+		reset_control_assert(priv->resets[rst]);
 err_put_clks:
 	while (--clk >= 0)
 		clk_put(priv->clks[clk]);
@@ -267,15 +287,15 @@ static int ohci_platform_remove(struct platform_device *dev)
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct usb_ohci_pdata *pdata = dev_get_platdata(&dev->dev);
 	struct ohci_platform_priv *priv = hcd_to_ohci_priv(hcd);
-	int clk;
+	int clk, rst;
 
 	usb_remove_hcd(hcd);
 
 	if (pdata->power_off)
 		pdata->power_off(dev);
 
-	if (priv->rst)
-		reset_control_assert(priv->rst);
+	for (rst = 0; rst < OHCI_MAX_RESETS && priv->resets[rst]; rst++)
+		reset_control_assert(priv->resets[rst]);
 
 	for (clk = 0; clk < OHCI_MAX_CLKS && priv->clks[clk]; clk++)
 		clk_put(priv->clks[clk]);
@@ -293,8 +313,7 @@ static int ohci_platform_suspend(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct usb_ohci_pdata *pdata = dev->platform_data;
-	struct platform_device *pdev =
-		container_of(dev, struct platform_device, dev);
+	struct platform_device *pdev = to_platform_device(dev);
 	bool do_wakeup = device_may_wakeup(dev);
 	int ret;
 
@@ -312,8 +331,7 @@ static int ohci_platform_resume(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct usb_ohci_pdata *pdata = dev_get_platdata(dev);
-	struct platform_device *pdev =
-		container_of(dev, struct platform_device, dev);
+	struct platform_device *pdev = to_platform_device(dev);
 
 	if (pdata->power_on) {
 		int err = pdata->power_on(pdev);
@@ -328,6 +346,7 @@ static int ohci_platform_resume(struct device *dev)
 
 static const struct of_device_id ohci_platform_ids[] = {
 	{ .compatible = "generic-ohci", },
+	{ .compatible = "cavium,octeon-6335-ohci", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, ohci_platform_ids);

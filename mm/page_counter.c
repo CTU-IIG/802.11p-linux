@@ -56,12 +56,12 @@ void page_counter_charge(struct page_counter *counter, unsigned long nr_pages)
  * @nr_pages: number of pages to charge
  * @fail: points first counter to hit its limit, if any
  *
- * Returns 0 on success, or -ENOMEM and @fail if the counter or one of
- * its ancestors has hit its configured limit.
+ * Returns %true on success, or %false and @fail if the counter or one
+ * of its ancestors has hit its configured limit.
  */
-int page_counter_try_charge(struct page_counter *counter,
-			    unsigned long nr_pages,
-			    struct page_counter **fail)
+bool page_counter_try_charge(struct page_counter *counter,
+			     unsigned long nr_pages,
+			     struct page_counter **fail)
 {
 	struct page_counter *c;
 
@@ -99,13 +99,13 @@ int page_counter_try_charge(struct page_counter *counter,
 		if (new > c->watermark)
 			c->watermark = new;
 	}
-	return 0;
+	return true;
 
 failed:
 	for (c = counter; c != *fail; c = c->parent)
 		page_counter_cancel(c, nr_pages);
 
-	return -ENOMEM;
+	return false;
 }
 
 /**
@@ -166,18 +166,19 @@ int page_counter_limit(struct page_counter *counter, unsigned long limit)
 /**
  * page_counter_memparse - memparse() for page counter limits
  * @buf: string to parse
+ * @max: string meaning maximum possible value
  * @nr_pages: returns the result in number of pages
  *
  * Returns -EINVAL, or 0 and @nr_pages on success.  @nr_pages will be
  * limited to %PAGE_COUNTER_MAX.
  */
-int page_counter_memparse(const char *buf, unsigned long *nr_pages)
+int page_counter_memparse(const char *buf, const char *max,
+			  unsigned long *nr_pages)
 {
-	char unlimited[] = "-1";
 	char *end;
 	u64 bytes;
 
-	if (!strncmp(buf, unlimited, sizeof(unlimited))) {
+	if (!strcmp(buf, max)) {
 		*nr_pages = PAGE_COUNTER_MAX;
 		return 0;
 	}

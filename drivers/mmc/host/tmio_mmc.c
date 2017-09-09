@@ -85,18 +85,26 @@ static int tmio_mmc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -EINVAL;
+	if (!res) {
+		ret = -EINVAL;
+		goto cell_disable;
+	}
 
-	/* SD control register space size is 0x200, 0x400 for bus_shift=1 */
-	pdata->bus_shift = resource_size(res) >> 10;
 	pdata->flags |= TMIO_MMC_HAVE_HIGH_REG;
 
-	ret = tmio_mmc_host_probe(&host, pdev, pdata);
-	if (ret)
+	host = tmio_mmc_host_alloc(pdev);
+	if (!host)
 		goto cell_disable;
 
-	ret = request_irq(irq, tmio_mmc_irq, IRQF_TRIGGER_FALLING,
+	/* SD control register space size is 0x200, 0x400 for bus_shift=1 */
+	host->bus_shift = resource_size(res) >> 10;
+
+	ret = tmio_mmc_host_probe(host, pdata);
+	if (ret)
+		goto host_free;
+
+	ret = devm_request_irq(&pdev->dev, irq, tmio_mmc_irq,
+				IRQF_TRIGGER_FALLING,
 				dev_name(&pdev->dev), host);
 	if (ret)
 		goto host_remove;
@@ -108,6 +116,8 @@ static int tmio_mmc_probe(struct platform_device *pdev)
 
 host_remove:
 	tmio_mmc_host_remove(host);
+host_free:
+	tmio_mmc_host_free(host);
 cell_disable:
 	if (cell->disable)
 		cell->disable(pdev);
@@ -122,7 +132,6 @@ static int tmio_mmc_remove(struct platform_device *pdev)
 
 	if (mmc) {
 		struct tmio_mmc_host *host = mmc_priv(mmc);
-		free_irq(platform_get_irq(pdev, 0), host);
 		tmio_mmc_host_remove(host);
 		if (cell->disable)
 			cell->disable(pdev);

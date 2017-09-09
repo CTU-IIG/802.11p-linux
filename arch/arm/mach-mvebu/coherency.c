@@ -33,12 +33,14 @@
 #include <asm/smp_plat.h>
 #include <asm/cacheflush.h>
 #include <asm/mach/map.h>
+#include <asm/dma-mapping.h>
 #include "coherency.h"
 #include "mvebu-soc-id.h"
 
 unsigned long coherency_phys_base;
 void __iomem *coherency_base;
 static void __iomem *coherency_cpu_base;
+static void __iomem *cpu_config_base;
 
 /* Coherency fabric registers */
 #define IO_SYNC_BARRIER_CTL_OFFSET		   0x0
@@ -50,7 +52,7 @@ enum {
 	COHERENCY_FABRIC_TYPE_ARMADA_380,
 };
 
-static struct of_device_id of_coherency_table[] = {
+static const struct of_device_id of_coherency_table[] = {
 	{.compatible = "marvell,coherency-fabric",
 	 .data = (void *) COHERENCY_FABRIC_TYPE_ARMADA_370_XP },
 	{.compatible = "marvell,armada-375-coherency-fabric",
@@ -64,65 +66,30 @@ static struct of_device_id of_coherency_table[] = {
 int ll_enable_coherency(void);
 void ll_add_cpu_to_smp_group(void);
 
-int set_cpu_coherent(void)
+#define CPU_CONFIG_SHARED_L2 BIT(16)
+
+/*
+ * Disable the "Shared L2 Present" bit in CPU Configuration register
+ * on Armada XP.
+ *
+ * The "Shared L2 Present" bit affects the "level of coherence" value
+ * in the clidr CP15 register.  Cache operation functions such as
+ * "flush all" and "invalidate all" operate on all the cache levels
+ * that included in the defined level of coherence. When HW I/O
+ * coherency is used, this bit causes unnecessary flushes of the L2
+ * cache.
+ */
+static void armada_xp_clear_shared_l2(void)
 {
-	if (!coherency_base) {
-		pr_warn("Can't make current CPU cache coherent.\n");
-		pr_warn("Coherency fabric is not initialized\n");
-		return 1;
-	}
+	u32 reg;
 
-	ll_add_cpu_to_smp_group();
-	return ll_enable_coherency();
+	if (!cpu_config_base)
+		return;
+
+	reg = readl(cpu_config_base);
+	reg &= ~CPU_CONFIG_SHARED_L2;
+	writel(reg, cpu_config_base);
 }
-
-static inline void mvebu_hwcc_sync_io_barrier(void)
-{
-	writel(0x1, coherency_cpu_base + IO_SYNC_BARRIER_CTL_OFFSET);
-	while (readl(coherency_cpu_base + IO_SYNC_BARRIER_CTL_OFFSET) & 0x1);
-}
-
-static dma_addr_t mvebu_hwcc_dma_map_page(struct device *dev, struct page *page,
-				  unsigned long offset, size_t size,
-				  enum dma_data_direction dir,
-				  struct dma_attrs *attrs)
-{
-	if (dir != DMA_TO_DEVICE)
-		mvebu_hwcc_sync_io_barrier();
-	return pfn_to_dma(dev, page_to_pfn(page)) + offset;
-}
-
-
-static void mvebu_hwcc_dma_unmap_page(struct device *dev, dma_addr_t dma_handle,
-			      size_t size, enum dma_data_direction dir,
-			      struct dma_attrs *attrs)
-{
-	if (dir != DMA_TO_DEVICE)
-		mvebu_hwcc_sync_io_barrier();
-}
-
-static void mvebu_hwcc_dma_sync(struct device *dev, dma_addr_t dma_handle,
-			size_t size, enum dma_data_direction dir)
-{
-	if (dir != DMA_TO_DEVICE)
-		mvebu_hwcc_sync_io_barrier();
-}
-
-static struct dma_map_ops mvebu_hwcc_dma_ops = {
-	.alloc			= arm_dma_alloc,
-	.free			= arm_dma_free,
-	.mmap			= arm_dma_mmap,
-	.map_page		= mvebu_hwcc_dma_map_page,
-	.unmap_page		= mvebu_hwcc_dma_unmap_page,
-	.get_sgtable		= arm_dma_get_sgtable,
-	.map_sg			= arm_dma_map_sg,
-	.unmap_sg		= arm_dma_unmap_sg,
-	.sync_single_for_cpu	= mvebu_hwcc_dma_sync,
-	.sync_single_for_device	= mvebu_hwcc_dma_sync,
-	.sync_sg_for_cpu	= arm_dma_sync_sg_for_cpu,
-	.sync_sg_for_device	= arm_dma_sync_sg_for_device,
-	.set_dma_mask		= arm_dma_set_mask,
-};
 
 static int mvebu_hwcc_notifier(struct notifier_block *nb,
 			       unsigned long event, void *__dev)
@@ -131,7 +98,7 @@ static int mvebu_hwcc_notifier(struct notifier_block *nb,
 
 	if (event != BUS_NOTIFY_ADD_DEVICE)
 		return NOTIFY_DONE;
-	set_dma_ops(dev, &mvebu_hwcc_dma_ops);
+	set_dma_ops(dev, &arm_coherent_dma_ops);
 
 	return NOTIFY_OK;
 }
@@ -140,13 +107,20 @@ static struct notifier_block mvebu_hwcc_nb = {
 	.notifier_call = mvebu_hwcc_notifier,
 };
 
-static struct notifier_block mvebu_hwcc_pci_nb = {
+static struct notifier_block mvebu_hwcc_pci_nb __maybe_unused = {
 	.notifier_call = mvebu_hwcc_notifier,
 };
+
+static int armada_xp_clear_l2_starting(unsigned int cpu)
+{
+	armada_xp_clear_shared_l2();
+	return 0;
+}
 
 static void __init armada_370_coherency_init(struct device_node *np)
 {
 	struct resource res;
+	struct device_node *cpu_config_np;
 
 	of_address_to_resource(np, 0, &res);
 	coherency_phys_base = res.start;
@@ -159,26 +133,38 @@ static void __init armada_370_coherency_init(struct device_node *np)
 	sync_cache_w(&coherency_phys_base);
 	coherency_base = of_iomap(np, 0);
 	coherency_cpu_base = of_iomap(np, 1);
+
+	cpu_config_np = of_find_compatible_node(NULL, NULL,
+						"marvell,armada-xp-cpu-config");
+	if (!cpu_config_np)
+		goto exit;
+
+	cpu_config_base = of_iomap(cpu_config_np, 0);
+	if (!cpu_config_base) {
+		of_node_put(cpu_config_np);
+		goto exit;
+	}
+
+	of_node_put(cpu_config_np);
+
+	cpuhp_setup_state_nocalls(CPUHP_AP_ARM_MVEBU_COHERENCY,
+				  "arm/mvebu/coherency:starting",
+				  armada_xp_clear_l2_starting, NULL);
+exit:
 	set_cpu_coherent();
 }
 
 /*
- * This ioremap hook is used on Armada 375/38x to ensure that PCIe
- * memory areas are mapped as MT_UNCACHED instead of MT_DEVICE. This
- * is needed as a workaround for a deadlock issue between the PCIe
- * interface and the cache controller.
+ * This ioremap hook is used on Armada 375/38x to ensure that all MMIO
+ * areas are mapped as MT_UNCACHED instead of MT_DEVICE. This is
+ * needed for the HW I/O coherency mechanism to work properly without
+ * deadlock.
  */
 static void __iomem *
-armada_pcie_wa_ioremap_caller(phys_addr_t phys_addr, size_t size,
-			      unsigned int mtype, void *caller)
+armada_wa_ioremap_caller(phys_addr_t phys_addr, size_t size,
+			 unsigned int mtype, void *caller)
 {
-	struct resource pcie_mem;
-
-	mvebu_mbus_get_pcie_mem_aperture(&pcie_mem);
-
-	if (pcie_mem.start <= phys_addr && (phys_addr + size) <= pcie_mem.end)
-		mtype = MT_UNCACHED;
-
+	mtype = MT_UNCACHED;
 	return __arm_ioremap_caller(phys_addr, size, mtype, caller);
 }
 
@@ -187,7 +173,15 @@ static void __init armada_375_380_coherency_init(struct device_node *np)
 	struct device_node *cache_dn;
 
 	coherency_cpu_base = of_iomap(np, 0);
-	arch_ioremap_caller = armada_pcie_wa_ioremap_caller;
+	arch_ioremap_caller = armada_wa_ioremap_caller;
+	pci_ioremap_set_mem_type(MT_UNCACHED);
+
+	/*
+	 * We should switch the PL310 to I/O coherency mode only if
+	 * I/O coherency is actually enabled.
+	 */
+	if (!coherency_available())
+		return;
 
 	/*
 	 * Add the PL310 property "arm,io-coherent". This makes sure the
@@ -244,6 +238,25 @@ static int coherency_type(void)
 	of_node_put(np);
 
 	return type;
+}
+
+int set_cpu_coherent(void)
+{
+	int type = coherency_type();
+
+	if (type == COHERENCY_FABRIC_TYPE_ARMADA_370_XP) {
+		if (!coherency_base) {
+			pr_warn("Can't make current CPU cache coherent.\n");
+			pr_warn("Coherency fabric is not initialized\n");
+			return 1;
+		}
+
+		armada_xp_clear_shared_l2();
+		ll_add_cpu_to_smp_group();
+		return ll_enable_coherency();
+	}
+
+	return 0;
 }
 
 int coherency_available(void)

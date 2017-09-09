@@ -17,7 +17,10 @@
 #include "util/symbol.h"
 #include "util/util.h"
 #include "util/data.h"
+#include "util/config.h"
 
+#include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <math.h>
 
@@ -30,6 +33,7 @@ enum {
 	PERF_HPP_DIFF__RATIO,
 	PERF_HPP_DIFF__WEIGHTED_DIFF,
 	PERF_HPP_DIFF__FORMULA,
+	PERF_HPP_DIFF__DELTA_ABS,
 
 	PERF_HPP_DIFF__MAX_INDEX
 };
@@ -64,7 +68,7 @@ static bool force;
 static bool show_period;
 static bool show_formula;
 static bool show_baseline_only;
-static unsigned int sort_compute;
+static unsigned int sort_compute = 1;
 
 static s64 compute_wdiff_w1;
 static s64 compute_wdiff_w2;
@@ -73,19 +77,22 @@ enum {
 	COMPUTE_DELTA,
 	COMPUTE_RATIO,
 	COMPUTE_WEIGHTED_DIFF,
+	COMPUTE_DELTA_ABS,
 	COMPUTE_MAX,
 };
 
 const char *compute_names[COMPUTE_MAX] = {
 	[COMPUTE_DELTA] = "delta",
+	[COMPUTE_DELTA_ABS] = "delta-abs",
 	[COMPUTE_RATIO] = "ratio",
 	[COMPUTE_WEIGHTED_DIFF] = "wdiff",
 };
 
-static int compute;
+static int compute = COMPUTE_DELTA_ABS;
 
 static int compute_2_hpp[COMPUTE_MAX] = {
 	[COMPUTE_DELTA]		= PERF_HPP_DIFF__DELTA,
+	[COMPUTE_DELTA_ABS]	= PERF_HPP_DIFF__DELTA_ABS,
 	[COMPUTE_RATIO]		= PERF_HPP_DIFF__RATIO,
 	[COMPUTE_WEIGHTED_DIFF]	= PERF_HPP_DIFF__WEIGHTED_DIFF,
 };
@@ -109,6 +116,10 @@ static struct header_column {
 	},
 	[PERF_HPP_DIFF__DELTA] = {
 		.name  = "Delta",
+		.width = 7,
+	},
+	[PERF_HPP_DIFF__DELTA_ABS] = {
+		.name  = "Delta Abs",
 		.width = 7,
 	},
 	[PERF_HPP_DIFF__RATIO] = {
@@ -298,6 +309,7 @@ static int formula_fprintf(struct hist_entry *he, struct hist_entry *pair,
 {
 	switch (compute) {
 	case COMPUTE_DELTA:
+	case COMPUTE_DELTA_ABS:
 		return formula_delta(he, pair, buf, size);
 	case COMPUTE_RATIO:
 		return formula_ratio(he, pair, buf, size);
@@ -310,16 +322,6 @@ static int formula_fprintf(struct hist_entry *he, struct hist_entry *pair,
 	return -1;
 }
 
-static int hists__add_entry(struct hists *hists,
-			    struct addr_location *al, u64 period,
-			    u64 weight, u64 transaction)
-{
-	if (__hists__add_entry(hists, al, NULL, NULL, NULL, period, weight,
-			       transaction, true) != NULL)
-		return 0;
-	return -ENOMEM;
-}
-
 static int diff__process_sample_event(struct perf_tool *tool __maybe_unused,
 				      union perf_event *event,
 				      struct perf_sample *sample,
@@ -328,17 +330,17 @@ static int diff__process_sample_event(struct perf_tool *tool __maybe_unused,
 {
 	struct addr_location al;
 	struct hists *hists = evsel__hists(evsel);
+	int ret = -1;
 
-	if (perf_event__preprocess_sample(event, machine, &al, sample) < 0) {
+	if (machine__resolve(machine, &al, sample) < 0) {
 		pr_warning("problem processing %d event, skipping it.\n",
 			   event->header.type);
 		return -1;
 	}
 
-	if (hists__add_entry(hists, &al, sample->period,
-			     sample->weight, sample->transaction)) {
+	if (!hists__add_entry(hists, &al, NULL, NULL, NULL, sample, true)) {
 		pr_warning("problem incrementing symbol period, skipping event\n");
-		return -1;
+		goto out_put;
 	}
 
 	/*
@@ -350,8 +352,10 @@ static int diff__process_sample_event(struct perf_tool *tool __maybe_unused,
 	hists->stats.total_period += sample->period;
 	if (!al.filtered)
 		hists->stats.total_non_filtered_period += sample->period;
-
-	return 0;
+	ret = 0;
+out_put:
+	addr_location__put(&al);
+	return ret;
 }
 
 static struct perf_tool tool = {
@@ -362,6 +366,7 @@ static struct perf_tool tool = {
 	.exit	= perf_event__process_exit,
 	.fork	= perf_event__process_fork,
 	.lost	= perf_event__process_lost,
+	.namespaces = perf_event__process_namespaces,
 	.ordered_events = true,
 	.ordering_requires_timestamps = true,
 };
@@ -371,7 +376,7 @@ static struct perf_evsel *evsel_match(struct perf_evsel *evsel,
 {
 	struct perf_evsel *e;
 
-	evlist__for_each(evlist, e) {
+	evlist__for_each_entry(evlist, e) {
 		if (perf_evsel__match2(evsel, e))
 			return e;
 	}
@@ -383,11 +388,20 @@ static void perf_evlist__collapse_resort(struct perf_evlist *evlist)
 {
 	struct perf_evsel *evsel;
 
-	evlist__for_each(evlist, evsel) {
+	evlist__for_each_entry(evlist, evsel) {
 		struct hists *hists = evsel__hists(evsel);
 
 		hists__collapse_resort(hists, NULL);
 	}
+}
+
+static struct data__file *fmt_to_data_file(struct perf_hpp_fmt *fmt)
+{
+	struct diff_hpp_fmt *dfmt = container_of(fmt, struct diff_hpp_fmt, fmt);
+	void *ptr = dfmt - dfmt->idx;
+	struct data__file *d = container_of(ptr, struct data__file, fmt);
+
+	return d;
 }
 
 static struct hist_entry*
@@ -407,8 +421,7 @@ get_pair_data(struct hist_entry *he, struct data__file *d)
 static struct hist_entry*
 get_pair_fmt(struct hist_entry *he, struct diff_hpp_fmt *dfmt)
 {
-	void *ptr = dfmt - dfmt->idx;
-	struct data__file *d = container_of(ptr, struct data__file, fmt);
+	struct data__file *d = fmt_to_data_file(&dfmt->fmt);
 
 	return get_pair_data(he, d);
 }
@@ -418,7 +431,7 @@ static void hists__baseline_only(struct hists *hists)
 	struct rb_root *root;
 	struct rb_node *next;
 
-	if (sort__need_collapse)
+	if (hists__has(hists, need_collapse))
 		root = &hists->entries_collapsed;
 	else
 		root = hists->entries_in;
@@ -430,7 +443,7 @@ static void hists__baseline_only(struct hists *hists)
 		next = rb_next(&he->rb_node_in);
 		if (!hist_entry__next_pair(he)) {
 			rb_erase(&he->rb_node_in, root);
-			hist_entry__free(he);
+			hist_entry__delete(he);
 		}
 	}
 }
@@ -440,7 +453,7 @@ static void hists__precompute(struct hists *hists)
 	struct rb_root *root;
 	struct rb_node *next;
 
-	if (sort__need_collapse)
+	if (hists__has(hists, need_collapse))
 		root = &hists->entries_collapsed;
 	else
 		root = hists->entries_in;
@@ -448,26 +461,31 @@ static void hists__precompute(struct hists *hists)
 	next = rb_first(root);
 	while (next != NULL) {
 		struct hist_entry *he, *pair;
+		struct data__file *d;
+		int i;
 
 		he   = rb_entry(next, struct hist_entry, rb_node_in);
 		next = rb_next(&he->rb_node_in);
 
-		pair = get_pair_data(he, &data__files[sort_compute]);
-		if (!pair)
-			continue;
+		data__for_each_file_new(i, d) {
+			pair = get_pair_data(he, d);
+			if (!pair)
+				continue;
 
-		switch (compute) {
-		case COMPUTE_DELTA:
-			compute_delta(he, pair);
-			break;
-		case COMPUTE_RATIO:
-			compute_ratio(he, pair);
-			break;
-		case COMPUTE_WEIGHTED_DIFF:
-			compute_wdiff(he, pair);
-			break;
-		default:
-			BUG_ON(1);
+			switch (compute) {
+			case COMPUTE_DELTA:
+			case COMPUTE_DELTA_ABS:
+				compute_delta(he, pair);
+				break;
+			case COMPUTE_RATIO:
+				compute_ratio(he, pair);
+				break;
+			case COMPUTE_WEIGHTED_DIFF:
+				compute_wdiff(he, pair);
+				break;
+			default:
+				BUG_ON(1);
+			}
 		}
 	}
 }
@@ -494,6 +512,13 @@ __hist_entry__cmp_compute(struct hist_entry *left, struct hist_entry *right,
 
 		return cmp_doubles(l, r);
 	}
+	case COMPUTE_DELTA_ABS:
+	{
+		double l = fabs(left->diff.period_ratio_delta);
+		double r = fabs(right->diff.period_ratio_delta);
+
+		return cmp_doubles(l, r);
+	}
 	case COMPUTE_RATIO:
 	{
 		double l = left->diff.period_ratio;
@@ -517,7 +542,7 @@ __hist_entry__cmp_compute(struct hist_entry *left, struct hist_entry *right,
 
 static int64_t
 hist_entry__cmp_compute(struct hist_entry *left, struct hist_entry *right,
-			int c)
+			int c, int sort_idx)
 {
 	bool pairs_left  = hist_entry__has_pairs(left);
 	bool pairs_right = hist_entry__has_pairs(right);
@@ -529,8 +554,8 @@ hist_entry__cmp_compute(struct hist_entry *left, struct hist_entry *right,
 	if (!pairs_left || !pairs_right)
 		return pairs_left ? -1 : 1;
 
-	p_left  = get_pair_data(left,  &data__files[sort_compute]);
-	p_right = get_pair_data(right, &data__files[sort_compute]);
+	p_left  = get_pair_data(left,  &data__files[sort_idx]);
+	p_right = get_pair_data(right, &data__files[sort_idx]);
 
 	if (!p_left && !p_right)
 		return 0;
@@ -545,55 +570,120 @@ hist_entry__cmp_compute(struct hist_entry *left, struct hist_entry *right,
 	return __hist_entry__cmp_compute(p_left, p_right, c);
 }
 
-static void insert_hist_entry_by_compute(struct rb_root *root,
-					 struct hist_entry *he,
-					 int c)
+static int64_t
+hist_entry__cmp_compute_idx(struct hist_entry *left, struct hist_entry *right,
+			    int c, int sort_idx)
 {
-	struct rb_node **p = &root->rb_node;
-	struct rb_node *parent = NULL;
-	struct hist_entry *iter;
+	struct hist_entry *p_right, *p_left;
 
-	while (*p != NULL) {
-		parent = *p;
-		iter = rb_entry(parent, struct hist_entry, rb_node);
-		if (hist_entry__cmp_compute(he, iter, c) < 0)
-			p = &(*p)->rb_left;
-		else
-			p = &(*p)->rb_right;
+	p_left  = get_pair_data(left,  &data__files[sort_idx]);
+	p_right = get_pair_data(right, &data__files[sort_idx]);
+
+	if (!p_left && !p_right)
+		return 0;
+
+	if (!p_left || !p_right)
+		return p_left ? -1 : 1;
+
+	if (c != COMPUTE_DELTA && c != COMPUTE_DELTA_ABS) {
+		/*
+		 * The delta can be computed without the baseline, but
+		 * others are not.  Put those entries which have no
+		 * values below.
+		 */
+		if (left->dummy && right->dummy)
+			return 0;
+
+		if (left->dummy || right->dummy)
+			return left->dummy ? 1 : -1;
 	}
 
-	rb_link_node(&he->rb_node, parent, p);
-	rb_insert_color(&he->rb_node, root);
+	return __hist_entry__cmp_compute(p_left, p_right, c);
 }
 
-static void hists__compute_resort(struct hists *hists)
+static int64_t
+hist_entry__cmp_nop(struct perf_hpp_fmt *fmt __maybe_unused,
+		    struct hist_entry *left __maybe_unused,
+		    struct hist_entry *right __maybe_unused)
 {
-	struct rb_root *root;
-	struct rb_node *next;
+	return 0;
+}
 
-	if (sort__need_collapse)
-		root = &hists->entries_collapsed;
-	else
-		root = hists->entries_in;
+static int64_t
+hist_entry__cmp_baseline(struct perf_hpp_fmt *fmt __maybe_unused,
+			 struct hist_entry *left, struct hist_entry *right)
+{
+	if (left->stat.period == right->stat.period)
+		return 0;
+	return left->stat.period > right->stat.period ? 1 : -1;
+}
 
-	hists->entries = RB_ROOT;
-	next = rb_first(root);
+static int64_t
+hist_entry__cmp_delta(struct perf_hpp_fmt *fmt,
+		      struct hist_entry *left, struct hist_entry *right)
+{
+	struct data__file *d = fmt_to_data_file(fmt);
 
-	hists__reset_stats(hists);
-	hists__reset_col_len(hists);
+	return hist_entry__cmp_compute(right, left, COMPUTE_DELTA, d->idx);
+}
 
-	while (next != NULL) {
-		struct hist_entry *he;
+static int64_t
+hist_entry__cmp_delta_abs(struct perf_hpp_fmt *fmt,
+		      struct hist_entry *left, struct hist_entry *right)
+{
+	struct data__file *d = fmt_to_data_file(fmt);
 
-		he = rb_entry(next, struct hist_entry, rb_node_in);
-		next = rb_next(&he->rb_node_in);
+	return hist_entry__cmp_compute(right, left, COMPUTE_DELTA_ABS, d->idx);
+}
 
-		insert_hist_entry_by_compute(&hists->entries, he, compute);
-		hists__inc_stats(hists, he);
+static int64_t
+hist_entry__cmp_ratio(struct perf_hpp_fmt *fmt,
+		      struct hist_entry *left, struct hist_entry *right)
+{
+	struct data__file *d = fmt_to_data_file(fmt);
 
-		if (!he->filtered)
-			hists__calc_col_len(hists, he);
-	}
+	return hist_entry__cmp_compute(right, left, COMPUTE_RATIO, d->idx);
+}
+
+static int64_t
+hist_entry__cmp_wdiff(struct perf_hpp_fmt *fmt,
+		      struct hist_entry *left, struct hist_entry *right)
+{
+	struct data__file *d = fmt_to_data_file(fmt);
+
+	return hist_entry__cmp_compute(right, left, COMPUTE_WEIGHTED_DIFF, d->idx);
+}
+
+static int64_t
+hist_entry__cmp_delta_idx(struct perf_hpp_fmt *fmt __maybe_unused,
+			  struct hist_entry *left, struct hist_entry *right)
+{
+	return hist_entry__cmp_compute_idx(right, left, COMPUTE_DELTA,
+					   sort_compute);
+}
+
+static int64_t
+hist_entry__cmp_delta_abs_idx(struct perf_hpp_fmt *fmt __maybe_unused,
+			      struct hist_entry *left, struct hist_entry *right)
+{
+	return hist_entry__cmp_compute_idx(right, left, COMPUTE_DELTA_ABS,
+					   sort_compute);
+}
+
+static int64_t
+hist_entry__cmp_ratio_idx(struct perf_hpp_fmt *fmt __maybe_unused,
+			  struct hist_entry *left, struct hist_entry *right)
+{
+	return hist_entry__cmp_compute_idx(right, left, COMPUTE_RATIO,
+					   sort_compute);
+}
+
+static int64_t
+hist_entry__cmp_wdiff_idx(struct perf_hpp_fmt *fmt __maybe_unused,
+			  struct hist_entry *left, struct hist_entry *right)
+{
+	return hist_entry__cmp_compute_idx(right, left, COMPUTE_WEIGHTED_DIFF,
+					   sort_compute);
 }
 
 static void hists__process(struct hists *hists)
@@ -601,14 +691,11 @@ static void hists__process(struct hists *hists)
 	if (show_baseline_only)
 		hists__baseline_only(hists);
 
-	if (sort_compute) {
-		hists__precompute(hists);
-		hists__compute_resort(hists);
-	} else {
-		hists__output_resort(hists);
-	}
+	hists__precompute(hists);
+	hists__output_resort(hists, NULL);
 
-	hists__fprintf(hists, true, 0, 0, 0, stdout);
+	hists__fprintf(hists, !quiet, 0, 0, 0, stdout,
+		       symbol_conf.use_callchain);
 }
 
 static void data__fprintf(void)
@@ -632,7 +719,7 @@ static void data_process(void)
 	struct perf_evsel *evsel_base;
 	bool first = true;
 
-	evlist__for_each(evlist_base, evsel_base) {
+	evlist__for_each_entry(evlist_base, evsel_base) {
 		struct hists *hists_base = evsel__hists(evsel_base);
 		struct data__file *d;
 		int i;
@@ -655,13 +742,18 @@ static void data_process(void)
 				hists__link(hists_base, hists);
 		}
 
-		fprintf(stdout, "%s# Event '%s'\n#\n", first ? "" : "\n",
-			perf_evsel__name(evsel_base));
+		if (!quiet) {
+			fprintf(stdout, "%s# Event '%s'\n#\n", first ? "" : "\n",
+				perf_evsel__name(evsel_base));
+		}
 
 		first = false;
 
-		if (verbose || data__files_cnt > 2)
+		if (verbose > 0 || ((data__files_cnt > 2) && !quiet))
 			data__fprintf();
+
+		/* Don't sort callchain for perf diff */
+		perf_evsel__reset_sample_bit(evsel_base, CALLCHAIN);
 
 		hists__process(hists_base);
 	}
@@ -691,7 +783,7 @@ static int __cmd_diff(void)
 			goto out_delete;
 		}
 
-		ret = perf_session__process_events(d->session, &tool);
+		ret = perf_session__process_events(d->session);
 		if (ret) {
 			pr_err("Failed to process %s\n", d->file.path);
 			goto out_delete;
@@ -704,9 +796,7 @@ static int __cmd_diff(void)
 
  out_delete:
 	data__for_each_file(i, d) {
-		if (d->session)
-			perf_session__delete(d->session);
-
+		perf_session__delete(d->session);
 		data__free(d);
 	}
 
@@ -722,10 +812,11 @@ static const char * const diff_usage[] = {
 static const struct option options[] = {
 	OPT_INCR('v', "verbose", &verbose,
 		    "be more verbose (show symbol address, etc)"),
+	OPT_BOOLEAN('q', "quiet", &quiet, "Do not show any message"),
 	OPT_BOOLEAN('b', "baseline-only", &show_baseline_only,
 		    "Show only items with match in baseline"),
 	OPT_CALLBACK('c', "compute", &compute,
-		     "delta,ratio,wdiff:w1,w2 (default delta)",
+		     "delta,delta-abs,ratio,wdiff:w1,w2 (default delta-abs)",
 		     "Entries differential computation selection",
 		     setup_compute),
 	OPT_BOOLEAN('p', "period", &show_period,
@@ -735,6 +826,8 @@ static const struct option options[] = {
 	OPT_BOOLEAN('D', "dump-raw-trace", &dump_trace,
 		    "dump raw trace in ASCII"),
 	OPT_BOOLEAN('f', "force", &force, "don't complain, do it"),
+	OPT_STRING(0, "kallsyms", &symbol_conf.kallsyms_name,
+		   "file", "kallsyms pathname"),
 	OPT_BOOLEAN('m', "modules", &symbol_conf.use_modules,
 		    "load module symbols - WARNING: use only with -k and LIVE kernel"),
 	OPT_STRING('d', "dsos", &symbol_conf.dso_list_str, "dso[,dso...]",
@@ -746,11 +839,12 @@ static const struct option options[] = {
 	OPT_STRING('s', "sort", &sort_order, "key[,key2...]",
 		   "sort by key(s): pid, comm, dso, symbol, parent, cpu, srcline, ..."
 		   " Please refer the man page for the complete list."),
-	OPT_STRING('t', "field-separator", &symbol_conf.field_sep, "separator",
+	OPT_STRING_NOEMPTY('t', "field-separator", &symbol_conf.field_sep, "separator",
 		   "separator for columns, no spaces will be added between "
 		   "columns '.' is reserved."),
-	OPT_STRING(0, "symfs", &symbol_conf.symfs, "directory",
-		    "Look for files with symbols relative to this directory"),
+	OPT_CALLBACK(0, "symfs", NULL, "directory",
+		     "Look for files with symbols relative to this directory",
+		     symbol__config_symfs),
 	OPT_UINTEGER('o', "order", &sort_compute, "Specify compute sorting."),
 	OPT_CALLBACK(0, "percentage", NULL, "relative|absolute",
 		     "How to display percentage of filtered entries", parse_filter_percentage),
@@ -805,7 +899,7 @@ static int __hpp__color_compare(struct perf_hpp_fmt *fmt,
 	char pfmt[20] = " ";
 
 	if (!pair)
-		goto dummy_print;
+		goto no_print;
 
 	switch (comparison_method) {
 	case COMPUTE_DELTA:
@@ -814,8 +908,6 @@ static int __hpp__color_compare(struct perf_hpp_fmt *fmt,
 		else
 			diff = compute_delta(he, pair);
 
-		if (fabs(diff) < 0.01)
-			goto dummy_print;
 		scnprintf(pfmt, 20, "%%%+d.2f%%%%", dfmt->header_width - 1);
 		return percent_color_snprintf(hpp->buf, hpp->size,
 					pfmt, diff);
@@ -846,6 +938,9 @@ static int __hpp__color_compare(struct perf_hpp_fmt *fmt,
 		BUG_ON(1);
 	}
 dummy_print:
+	return scnprintf(hpp->buf, hpp->size, "%*s",
+			dfmt->header_width, "N/A");
+no_print:
 	return scnprintf(hpp->buf, hpp->size, "%*s",
 			dfmt->header_width, pfmt);
 }
@@ -891,19 +986,21 @@ hpp__entry_pair(struct hist_entry *he, struct hist_entry *pair,
 
 	switch (idx) {
 	case PERF_HPP_DIFF__DELTA:
+	case PERF_HPP_DIFF__DELTA_ABS:
 		if (pair->diff.computed)
 			diff = pair->diff.period_ratio_delta;
 		else
 			diff = compute_delta(he, pair);
 
-		if (fabs(diff) >= 0.01)
-			scnprintf(buf, size, "%+4.2F%%", diff);
+		scnprintf(buf, size, "%+4.2F%%", diff);
 		break;
 
 	case PERF_HPP_DIFF__RATIO:
 		/* No point for ratio number if we are dummy.. */
-		if (he->dummy)
+		if (he->dummy) {
+			scnprintf(buf, size, "N/A");
 			break;
+		}
 
 		if (pair->diff.computed)
 			ratio = pair->diff.period_ratio;
@@ -916,8 +1013,10 @@ hpp__entry_pair(struct hist_entry *he, struct hist_entry *pair,
 
 	case PERF_HPP_DIFF__WEIGHTED_DIFF:
 		/* No point for wdiff number if we are dummy.. */
-		if (he->dummy)
+		if (he->dummy) {
+			scnprintf(buf, size, "N/A");
 			break;
+		}
 
 		if (pair->diff.computed)
 			wdiff = pair->diff.wdiff;
@@ -976,7 +1075,9 @@ static int hpp__entry_global(struct perf_hpp_fmt *_fmt, struct perf_hpp *hpp,
 }
 
 static int hpp__header(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
-		       struct perf_evsel *evsel __maybe_unused)
+		       struct hists *hists __maybe_unused,
+		       int line __maybe_unused,
+		       int *span __maybe_unused)
 {
 	struct diff_hpp_fmt *dfmt =
 		container_of(fmt, struct diff_hpp_fmt, fmt);
@@ -987,7 +1088,7 @@ static int hpp__header(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
 
 static int hpp__width(struct perf_hpp_fmt *fmt,
 		      struct perf_hpp *hpp __maybe_unused,
-		      struct perf_evsel *evsel __maybe_unused)
+		      struct hists *hists __maybe_unused)
 {
 	struct diff_hpp_fmt *dfmt =
 		container_of(fmt, struct diff_hpp_fmt, fmt);
@@ -1038,32 +1139,45 @@ static void data__hpp_register(struct data__file *d, int idx)
 	fmt->header = hpp__header;
 	fmt->width  = hpp__width;
 	fmt->entry  = hpp__entry_global;
+	fmt->cmp    = hist_entry__cmp_nop;
+	fmt->collapse = hist_entry__cmp_nop;
 
 	/* TODO more colors */
 	switch (idx) {
 	case PERF_HPP_DIFF__BASELINE:
 		fmt->color = hpp__color_baseline;
+		fmt->sort  = hist_entry__cmp_baseline;
 		break;
 	case PERF_HPP_DIFF__DELTA:
 		fmt->color = hpp__color_delta;
+		fmt->sort  = hist_entry__cmp_delta;
 		break;
 	case PERF_HPP_DIFF__RATIO:
 		fmt->color = hpp__color_ratio;
+		fmt->sort  = hist_entry__cmp_ratio;
 		break;
 	case PERF_HPP_DIFF__WEIGHTED_DIFF:
 		fmt->color = hpp__color_wdiff;
+		fmt->sort  = hist_entry__cmp_wdiff;
+		break;
+	case PERF_HPP_DIFF__DELTA_ABS:
+		fmt->color = hpp__color_delta;
+		fmt->sort  = hist_entry__cmp_delta_abs;
 		break;
 	default:
+		fmt->sort  = hist_entry__cmp_nop;
 		break;
 	}
 
 	init_header(d, dfmt);
 	perf_hpp__column_register(fmt);
+	perf_hpp__register_sort_field(fmt);
 }
 
-static void ui_init(void)
+static int ui_init(void)
 {
 	struct data__file *d;
+	struct perf_hpp_fmt *fmt;
 	int i;
 
 	data__for_each_file(i, d) {
@@ -1093,6 +1207,49 @@ static void ui_init(void)
 			data__hpp_register(d, i ? PERF_HPP_DIFF__PERIOD :
 						  PERF_HPP_DIFF__PERIOD_BASELINE);
 	}
+
+	if (!sort_compute)
+		return 0;
+
+	/*
+	 * Prepend an fmt to sort on columns at 'sort_compute' first.
+	 * This fmt is added only to the sort list but not to the
+	 * output fields list.
+	 *
+	 * Note that this column (data) can be compared twice - one
+	 * for this 'sort_compute' fmt and another for the normal
+	 * diff_hpp_fmt.  But it shouldn't a problem as most entries
+	 * will be sorted out by first try or baseline and comparing
+	 * is not a costly operation.
+	 */
+	fmt = zalloc(sizeof(*fmt));
+	if (fmt == NULL) {
+		pr_err("Memory allocation failed\n");
+		return -1;
+	}
+
+	fmt->cmp      = hist_entry__cmp_nop;
+	fmt->collapse = hist_entry__cmp_nop;
+
+	switch (compute) {
+	case COMPUTE_DELTA:
+		fmt->sort = hist_entry__cmp_delta_idx;
+		break;
+	case COMPUTE_RATIO:
+		fmt->sort = hist_entry__cmp_ratio_idx;
+		break;
+	case COMPUTE_WEIGHTED_DIFF:
+		fmt->sort = hist_entry__cmp_wdiff_idx;
+		break;
+	case COMPUTE_DELTA_ABS:
+		fmt->sort = hist_entry__cmp_delta_abs_idx;
+		break;
+	default:
+		BUG_ON(1);
+	}
+
+	perf_hpp__prepend_sort_field(fmt);
+	return 0;
 }
 
 static int data_init(int argc, const char **argv)
@@ -1141,16 +1298,44 @@ static int data_init(int argc, const char **argv)
 	return 0;
 }
 
-int cmd_diff(int argc, const char **argv, const char *prefix __maybe_unused)
+static int diff__config(const char *var, const char *value,
+			void *cb __maybe_unused)
+{
+	if (!strcmp(var, "diff.order")) {
+		sort_compute = perf_config_int(var, value);
+		return 0;
+	}
+	if (!strcmp(var, "diff.compute")) {
+		if (!strcmp(value, "delta")) {
+			compute = COMPUTE_DELTA;
+		} else if (!strcmp(value, "delta-abs")) {
+			compute = COMPUTE_DELTA_ABS;
+		} else if (!strcmp(value, "ratio")) {
+			compute = COMPUTE_RATIO;
+		} else if (!strcmp(value, "wdiff")) {
+			compute = COMPUTE_WEIGHTED_DIFF;
+		} else {
+			pr_err("Invalid compute method: %s\n", value);
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+int cmd_diff(int argc, const char **argv)
 {
 	int ret = hists__init();
 
 	if (ret < 0)
 		return ret;
 
-	perf_config(perf_default_config, NULL);
+	perf_config(diff__config, NULL);
 
 	argc = parse_options(argc, argv, options, diff_usage, 0);
+
+	if (quiet)
+		perf_quiet_option();
 
 	if (symbol__init(NULL) < 0)
 		return -1;
@@ -1158,11 +1343,12 @@ int cmd_diff(int argc, const char **argv, const char *prefix __maybe_unused)
 	if (data_init(argc, argv) < 0)
 		return -1;
 
-	ui_init();
+	if (ui_init() < 0)
+		return -1;
 
 	sort__mode = SORT_MODE__DIFF;
 
-	if (setup_sorting() < 0)
+	if (setup_sorting(NULL) < 0)
 		usage_with_options(diff_usage, options);
 
 	setup_pager();

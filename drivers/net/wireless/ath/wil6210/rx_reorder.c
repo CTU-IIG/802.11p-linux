@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Qualcomm Atheros, Inc.
+ * Copyright (c) 2014-2017 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -89,7 +89,9 @@ static void wil_reorder_release(struct wil6210_priv *wil,
 	}
 }
 
+/* called in NAPI context */
 void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb)
+__acquires(&sta->tid_rx_lock) __releases(&sta->tid_rx_lock)
 {
 	struct net_device *ndev = wil_to_ndev(wil);
 	struct vring_rx_desc *d = wil_skb_rxdesc(skb);
@@ -97,37 +99,53 @@ void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb)
 	int cid = wil_rxdesc_cid(d);
 	int mid = wil_rxdesc_mid(d);
 	u16 seq = wil_rxdesc_seq(d);
+	int mcast = wil_rxdesc_mcast(d);
 	struct wil_sta_info *sta = &wil->sta[cid];
 	struct wil_tid_ampdu_rx *r;
 	u16 hseq;
 	int index;
-	unsigned long flags;
 
-	wil_dbg_txrx(wil, "MID %d CID %d TID %d Seq 0x%03x\n",
-		     mid, cid, tid, seq);
+	wil_dbg_txrx(wil, "MID %d CID %d TID %d Seq 0x%03x mcast %01x\n",
+		     mid, cid, tid, seq, mcast);
 
-	spin_lock_irqsave(&sta->tid_rx_lock, flags);
-
-	r = sta->tid_rx[tid];
-	if (!r) {
-		spin_unlock_irqrestore(&sta->tid_rx_lock, flags);
+	if (unlikely(mcast)) {
 		wil_netif_rx_any(skb, ndev);
 		return;
 	}
 
+	spin_lock(&sta->tid_rx_lock);
+
+	r = sta->tid_rx[tid];
+	if (!r) {
+		wil_netif_rx_any(skb, ndev);
+		goto out;
+	}
+
+	r->total++;
 	hseq = r->head_seq_num;
 
 	/** Due to the race between WMI events, where BACK establishment
 	 * reported, and data Rx, few packets may be pass up before reorder
 	 * buffer get allocated. Catch up by pretending SSN is what we
 	 * see in the 1-st Rx packet
+	 *
+	 * Another scenario, Rx get delayed and we got packet from before
+	 * BACK. Pass it to the stack and wait.
 	 */
 	if (r->first_time) {
 		r->first_time = false;
 		if (seq != r->head_seq_num) {
-			wil_err(wil, "Error: 1-st frame with wrong sequence"
-				" %d, should be %d. Fixing...\n", seq,
-				r->head_seq_num);
+			if (seq_less(seq, r->head_seq_num)) {
+				wil_err(wil,
+					"Error: frame with early sequence 0x%03x, should be 0x%03x. Waiting...\n",
+					seq, r->head_seq_num);
+				r->first_time = true;
+				wil_netif_rx_any(skb, ndev);
+				goto out;
+			}
+			wil_err(wil,
+				"Error: 1-st frame with wrong sequence 0x%03x, should be 0x%03x. Fixing...\n",
+				seq, r->head_seq_num);
 			r->head_seq_num = seq;
 			r->ssn = seq;
 		}
@@ -136,6 +154,9 @@ void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb)
 	/* frame with out of date sequence number */
 	if (seq_less(seq, r->head_seq_num)) {
 		r->ssn_last_drop = seq;
+		r->drop_old++;
+		wil_dbg_txrx(wil, "Rx drop: old seq 0x%03x head 0x%03x\n",
+			     seq, r->head_seq_num);
 		dev_kfree_skb(skb);
 		goto out;
 	}
@@ -156,6 +177,8 @@ void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb)
 
 	/* check if we already stored this frame */
 	if (r->reorder_buf[index]) {
+		r->drop_dup++;
+		wil_dbg_txrx(wil, "Rx drop: dup seq 0x%03x\n", seq);
 		dev_kfree_skb(skb);
 		goto out;
 	}
@@ -179,7 +202,33 @@ void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb)
 	wil_reorder_release(wil, r);
 
 out:
-	spin_unlock_irqrestore(&sta->tid_rx_lock, flags);
+	spin_unlock(&sta->tid_rx_lock);
+}
+
+/* process BAR frame, called in NAPI context */
+void wil_rx_bar(struct wil6210_priv *wil, u8 cid, u8 tid, u16 seq)
+{
+	struct wil_sta_info *sta = &wil->sta[cid];
+	struct wil_tid_ampdu_rx *r;
+
+	spin_lock(&sta->tid_rx_lock);
+
+	r = sta->tid_rx[tid];
+	if (!r) {
+		wil_err(wil, "BAR for non-existing CID %d TID %d\n", cid, tid);
+		goto out;
+	}
+	if (seq_less(seq, r->head_seq_num)) {
+		wil_err(wil, "BAR Seq 0x%03x preceding head 0x%03x\n",
+			seq, r->head_seq_num);
+		goto out;
+	}
+	wil_dbg_txrx(wil, "BAR: CID %d TID %d Seq 0x%03x head 0x%03x\n",
+		     cid, tid, seq, r->head_seq_num);
+	wil_release_reorder_frames(wil, r, seq);
+
+out:
+	spin_unlock(&sta->tid_rx_lock);
 }
 
 struct wil_tid_ampdu_rx *wil_tid_ampdu_rx_alloc(struct wil6210_priv *wil,
@@ -212,10 +261,144 @@ struct wil_tid_ampdu_rx *wil_tid_ampdu_rx_alloc(struct wil6210_priv *wil,
 void wil_tid_ampdu_rx_free(struct wil6210_priv *wil,
 			   struct wil_tid_ampdu_rx *r)
 {
+	int i;
+
 	if (!r)
 		return;
-	wil_release_reorder_frames(wil, r, r->head_seq_num + r->buf_size);
+
+	/* Do not pass remaining frames to the network stack - it may be
+	 * not expecting to get any more Rx. Rx from here may lead to
+	 * kernel OOPS since some per-socket accounting info was already
+	 * released.
+	 */
+	for (i = 0; i < r->buf_size; i++)
+		kfree_skb(r->reorder_buf[i]);
+
 	kfree(r->reorder_buf);
 	kfree(r->reorder_time);
 	kfree(r);
+}
+
+/* ADDBA processing */
+static u16 wil_agg_size(struct wil6210_priv *wil, u16 req_agg_wsize)
+{
+	u16 max_agg_size = min_t(u16, WIL_MAX_AGG_WSIZE, WIL_MAX_AMPDU_SIZE /
+				 (mtu_max + WIL_MAX_MPDU_OVERHEAD));
+
+	if (!req_agg_wsize)
+		return max_agg_size;
+
+	return min(max_agg_size, req_agg_wsize);
+}
+
+/* Block Ack - Rx side (recipient) */
+int wil_addba_rx_request(struct wil6210_priv *wil, u8 cidxtid,
+			 u8 dialog_token, __le16 ba_param_set,
+			 __le16 ba_timeout, __le16 ba_seq_ctrl)
+__acquires(&sta->tid_rx_lock) __releases(&sta->tid_rx_lock)
+{
+	u16 param_set = le16_to_cpu(ba_param_set);
+	u16 agg_timeout = le16_to_cpu(ba_timeout);
+	u16 seq_ctrl = le16_to_cpu(ba_seq_ctrl);
+	struct wil_sta_info *sta;
+	u8 cid, tid;
+	u16 agg_wsize = 0;
+	/* bit 0: A-MSDU supported
+	 * bit 1: policy (should be 0 for us)
+	 * bits 2..5: TID
+	 * bits 6..15: buffer size
+	 */
+	u16 req_agg_wsize = WIL_GET_BITS(param_set, 6, 15);
+	bool agg_amsdu = !!(param_set & BIT(0));
+	int ba_policy = param_set & BIT(1);
+	u16 status = WLAN_STATUS_SUCCESS;
+	u16 ssn = seq_ctrl >> 4;
+	struct wil_tid_ampdu_rx *r;
+	int rc = 0;
+
+	might_sleep();
+	parse_cidxtid(cidxtid, &cid, &tid);
+
+	/* sanity checks */
+	if (cid >= WIL6210_MAX_CID) {
+		wil_err(wil, "BACK: invalid CID %d\n", cid);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	sta = &wil->sta[cid];
+	if (sta->status != wil_sta_connected) {
+		wil_err(wil, "BACK: CID %d not connected\n", cid);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	wil_dbg_wmi(wil,
+		    "ADDBA request for CID %d %pM TID %d size %d timeout %d AMSDU%s policy %d token %d SSN 0x%03x\n",
+		    cid, sta->addr, tid, req_agg_wsize, agg_timeout,
+		    agg_amsdu ? "+" : "-", !!ba_policy, dialog_token, ssn);
+
+	/* apply policies */
+	if (ba_policy) {
+		wil_err(wil, "BACK requested unsupported ba_policy == 1\n");
+		status = WLAN_STATUS_INVALID_QOS_PARAM;
+	}
+	if (status == WLAN_STATUS_SUCCESS) {
+		if (req_agg_wsize == 0) {
+			wil_dbg_misc(wil, "Suggest BACK wsize %d\n",
+				     WIL_MAX_AGG_WSIZE);
+			agg_wsize = WIL_MAX_AGG_WSIZE;
+		} else {
+			agg_wsize = min_t(u16,
+					  WIL_MAX_AGG_WSIZE, req_agg_wsize);
+		}
+	}
+
+	rc = wmi_addba_rx_resp(wil, cid, tid, dialog_token, status,
+			       agg_amsdu, agg_wsize, agg_timeout);
+	if (rc || (status != WLAN_STATUS_SUCCESS)) {
+		wil_err(wil, "do not apply ba, rc(%d), status(%d)\n", rc,
+			status);
+		goto out;
+	}
+
+	/* apply */
+	r = wil_tid_ampdu_rx_alloc(wil, agg_wsize, ssn);
+	spin_lock_bh(&sta->tid_rx_lock);
+	wil_tid_ampdu_rx_free(wil, sta->tid_rx[tid]);
+	sta->tid_rx[tid] = r;
+	spin_unlock_bh(&sta->tid_rx_lock);
+
+out:
+	return rc;
+}
+
+/* BACK - Tx side (originator) */
+int wil_addba_tx_request(struct wil6210_priv *wil, u8 ringid, u16 wsize)
+{
+	u8 agg_wsize = wil_agg_size(wil, wsize);
+	u16 agg_timeout = 0;
+	struct vring_tx_data *txdata = &wil->vring_tx_data[ringid];
+	int rc = 0;
+
+	if (txdata->addba_in_progress) {
+		wil_dbg_misc(wil, "ADDBA for vring[%d] already in progress\n",
+			     ringid);
+		goto out;
+	}
+	if (txdata->agg_wsize) {
+		wil_dbg_misc(wil,
+			     "ADDBA for vring[%d] already done for wsize %d\n",
+			     ringid, txdata->agg_wsize);
+		goto out;
+	}
+	txdata->addba_in_progress = true;
+	rc = wmi_addba(wil, ringid, agg_wsize, agg_timeout);
+	if (rc) {
+		wil_err(wil, "wmi_addba failed, rc (%d)", rc);
+		txdata->addba_in_progress = false;
+	}
+
+out:
+	return rc;
 }

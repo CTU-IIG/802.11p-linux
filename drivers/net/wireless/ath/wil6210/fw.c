@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Qualcomm Atheros, Inc.
+ * Copyright (c) 2014-2015,2017 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -19,17 +19,9 @@
 #include "wil6210.h"
 #include "fw.h"
 
-MODULE_FIRMWARE(WIL_FW_NAME);
-
-/* target operations */
-/* register read */
-#define R(a) ioread32(wil->csr + HOSTADDR(a))
-/* register write. wmb() to make sure it is completed */
-#define W(a, v) do { iowrite32(v, wil->csr + HOSTADDR(a)); wmb(); } while (0)
-/* register set = read, OR, write */
-#define S(a, v) W(a, R(a) | v)
-/* register clear = read, AND with inverted, write */
-#define C(a, v) W(a, R(a) & ~v)
+MODULE_FIRMWARE(WIL_FW_NAME_DEFAULT);
+MODULE_FIRMWARE(WIL_FW_NAME_SPARROW_PLUS);
+MODULE_FIRMWARE(WIL_BOARD_FILE_NAME);
 
 static
 void wil_memset_toio_32(volatile void __iomem *dst, u32 val,

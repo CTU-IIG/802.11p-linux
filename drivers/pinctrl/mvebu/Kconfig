@@ -26,6 +26,10 @@ config PINCTRL_ARMADA_38X
 	bool
 	select PINCTRL_MVEBU
 
+config PINCTRL_ARMADA_39X
+	bool
+	select PINCTRL_MVEBU
+
 config PINCTRL_ARMADA_XP
 	bool
 	select PINCTRL_MVEBU
@@ -35,3 +39,10 @@ config PINCTRL_ORION
 	select PINCTRL_MVEBU
 
 endif
+
+config PINCTRL_ARMADA_37XX
+       bool
+       select GENERIC_PINCONF
+       select MFD_SYSCON
+       select PINCONF
+       select PINMUX

@@ -166,11 +166,8 @@ static struct snd_pcm_hardware snd_p16v_capture_hw = {
 static void snd_p16v_pcm_free_substream(struct snd_pcm_runtime *runtime)
 {
 	struct snd_emu10k1_pcm *epcm = runtime->private_data;
-  
-	if (epcm) {
-		/* dev_dbg(emu->card->dev, "epcm free: %p\n", epcm); */
-		kfree(epcm);
-	}
+
+	kfree(epcm);
 }
 
 /* open_playback callback */
@@ -303,37 +300,29 @@ static int snd_p16v_pcm_open_capture(struct snd_pcm_substream *substream)
 static int snd_p16v_pcm_hw_params_playback(struct snd_pcm_substream *substream,
 				      struct snd_pcm_hw_params *hw_params)
 {
-	int result;
-	result = snd_pcm_lib_malloc_pages(substream,
+	return snd_pcm_lib_malloc_pages(substream,
 					params_buffer_bytes(hw_params));
-	return result;
 }
 
 /* hw_params callback */
 static int snd_p16v_pcm_hw_params_capture(struct snd_pcm_substream *substream,
 				      struct snd_pcm_hw_params *hw_params)
 {
-	int result;
-	result = snd_pcm_lib_malloc_pages(substream,
+	return snd_pcm_lib_malloc_pages(substream,
 					params_buffer_bytes(hw_params));
-	return result;
 }
 
 
 /* hw_free callback */
 static int snd_p16v_pcm_hw_free_playback(struct snd_pcm_substream *substream)
 {
-	int result;
-	result = snd_pcm_lib_free_pages(substream);
-	return result;
+	return snd_pcm_lib_free_pages(substream);
 }
 
 /* hw_free callback */
 static int snd_p16v_pcm_hw_free_capture(struct snd_pcm_substream *substream)
 {
-	int result;
-	result = snd_pcm_lib_free_pages(substream);
-	return result;
+	return snd_pcm_lib_free_pages(substream);
 }
 
 
@@ -604,7 +593,7 @@ snd_p16v_pcm_pointer_capture(struct snd_pcm_substream *substream)
 }
 
 /* operators */
-static struct snd_pcm_ops snd_p16v_playback_front_ops = {
+static const struct snd_pcm_ops snd_p16v_playback_front_ops = {
 	.open =        snd_p16v_pcm_open_playback_front,
 	.close =       snd_p16v_pcm_close_playback,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -615,7 +604,7 @@ static struct snd_pcm_ops snd_p16v_playback_front_ops = {
 	.pointer =     snd_p16v_pcm_pointer_playback,
 };
 
-static struct snd_pcm_ops snd_p16v_capture_ops = {
+static const struct snd_pcm_ops snd_p16v_capture_ops = {
 	.open =        snd_p16v_pcm_open_capture,
 	.close =       snd_p16v_pcm_close_capture,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -640,7 +629,7 @@ int snd_p16v_free(struct snd_emu10k1 *chip)
 	return 0;
 }
 
-int snd_p16v_pcm(struct snd_emu10k1 *emu, int device, struct snd_pcm **rpcm)
+int snd_p16v_pcm(struct snd_emu10k1 *emu, int device)
 {
 	struct snd_pcm *pcm;
 	struct snd_pcm_substream *substream;
@@ -649,8 +638,6 @@ int snd_p16v_pcm(struct snd_emu10k1 *emu, int device, struct snd_pcm **rpcm)
   
 	/* dev_dbg(emu->card->dev, "snd_p16v_pcm called. device=%d\n", device); */
 	emu->p16v_device_offset = device;
-	if (rpcm)
-		*rpcm = NULL;
 
 	if ((err = snd_pcm_new(emu->card, "p16v", device, 1, capture, &pcm)) < 0)
 		return err;
@@ -693,9 +680,6 @@ int snd_p16v_pcm(struct snd_emu10k1 *emu, int device, struct snd_pcm **rpcm)
 			   "preallocate capture substream: err=%d\n", err);
 		*/
 	}
-  
-	if (rpcm)
-		*rpcm = pcm;
   
 	return 0;
 }

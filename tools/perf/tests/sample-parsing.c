@@ -1,4 +1,6 @@
 #include <stdbool.h>
+#include <inttypes.h>
+#include <linux/kernel.h>
 #include <linux/types.h>
 
 #include "util.h"
@@ -110,7 +112,7 @@ static bool samples_same(const struct perf_sample *s1,
 
 	if (type & PERF_SAMPLE_STACK_USER) {
 		COMP(user_stack.size);
-		if (memcmp(s1->user_stack.data, s1->user_stack.data,
+		if (memcmp(s1->user_stack.data, s2->user_stack.data,
 			   s1->user_stack.size)) {
 			pr_debug("Samples differ at 'user_stack'\n");
 			return false;
@@ -290,7 +292,7 @@ out_free:
  * checks sample format bits separately and together.  If the test passes %0 is
  * returned, otherwise %-1 is returned.
  */
-int test__sample_parsing(void)
+int test__sample_parsing(int subtest __maybe_unused)
 {
 	const u64 rf[] = {4, 5, 6, 7, 12, 13, 14, 15};
 	u64 sample_type;

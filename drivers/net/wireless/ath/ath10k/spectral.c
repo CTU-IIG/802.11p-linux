@@ -17,6 +17,7 @@
 #include <linux/relay.h>
 #include "core.h"
 #include "debug.h"
+#include "wmi-ops.h"
 
 static void send_fft_sample(struct ath10k *ar,
 			    const struct fft_sample_tlv *fft_sample_tlv)
@@ -55,8 +56,23 @@ static uint8_t get_max_exp(s8 max_index, u16 max_magnitude, size_t bin_len,
 	return max_exp;
 }
 
+static inline size_t ath10k_spectral_fix_bin_size(struct ath10k *ar,
+						  size_t bin_len)
+{
+	/* some chipsets reports bin size as 2^n bytes + 'm' bytes in
+	 * report mode 2. First 2^n bytes carries inband tones and last
+	 * 'm' bytes carries band edge detection data mainly used in
+	 * radar detection purpose. Strip last 'm' bytes to make bin size
+	 * as a valid one. 'm' can take possible values of 4, 12.
+	 */
+	if (!is_power_of_2(bin_len))
+		bin_len -= ar->hw_params.spectral_bin_discard;
+
+	return bin_len;
+}
+
 int ath10k_spectral_process_fft(struct ath10k *ar,
-				const struct wmi_phyerr *phyerr,
+				struct wmi_phyerr_ev_arg *phyerr,
 				const struct phyerr_fft_report *fftr,
 				size_t bin_len, u64 tsf)
 {
@@ -68,6 +84,8 @@ int ath10k_spectral_process_fft(struct ath10k *ar,
 	int dc_pos;
 
 	fft_sample = (struct fft_sample_ath10k *)&buf;
+
+	bin_len = ath10k_spectral_fix_bin_size(ar, bin_len);
 
 	if (bin_len < 64 || bin_len > SPECTRAL_ATH10K_MAX_NUM_BINS)
 		return -EINVAL;
@@ -91,9 +109,9 @@ int ath10k_spectral_process_fft(struct ath10k *ar,
 		break;
 	case 80:
 		/* TODO: As experiments with an analogue sender and various
-		 * configuaritions (fft-sizes of 64/128/256 and 20/40/80 Mhz)
+		 * configurations (fft-sizes of 64/128/256 and 20/40/80 Mhz)
 		 * show, the particular configuration of 80 MHz/64 bins does
-		 * not match with the other smaples at all. Until the reason
+		 * not match with the other samples at all. Until the reason
 		 * for that is found, don't report these samples.
 		 */
 		if (bin_len == 64)
@@ -117,15 +135,14 @@ int ath10k_spectral_process_fft(struct ath10k *ar,
 	fft_sample->total_gain_db = __cpu_to_be16(total_gain_db);
 	fft_sample->base_pwr_db = __cpu_to_be16(base_pwr_db);
 
-	freq1 = __le16_to_cpu(phyerr->freq1);
-	freq2 = __le16_to_cpu(phyerr->freq2);
+	freq1 = phyerr->freq1;
+	freq2 = phyerr->freq2;
 	fft_sample->freq1 = __cpu_to_be16(freq1);
 	fft_sample->freq2 = __cpu_to_be16(freq2);
 
 	chain_idx = MS(reg0, SEARCH_FFT_REPORT_REG0_FFT_CHN_IDX);
 
-	fft_sample->noise = __cpu_to_be16(
-			__le16_to_cpu(phyerr->nf_chains[chain_idx]));
+	fft_sample->noise = __cpu_to_be16(phyerr->nf_chains[chain_idx]);
 
 	bins = (u8 *)fftr;
 	bins += sizeof(*fftr);
@@ -269,7 +286,7 @@ static ssize_t read_file_spec_scan_ctl(struct file *file, char __user *user_buf,
 {
 	struct ath10k *ar = file->private_data;
 	char *mode = "";
-	unsigned int len;
+	size_t len;
 	enum ath10k_spectral_mode spectral_mode;
 
 	mutex_lock(&ar->conf_mutex);
@@ -329,7 +346,7 @@ static ssize_t write_file_spec_scan_ctl(struct file *file,
 		} else {
 			res = -EINVAL;
 		}
-	} else if (strncmp("background", buf, 9) == 0) {
+	} else if (strncmp("background", buf, 10) == 0) {
 		res = ath10k_spectral_scan_config(ar, SPECTRAL_BACKGROUND);
 	} else if (strncmp("manual", buf, 6) == 0) {
 		res = ath10k_spectral_scan_config(ar, SPECTRAL_MANUAL);
@@ -361,7 +378,7 @@ static ssize_t read_file_spectral_count(struct file *file,
 {
 	struct ath10k *ar = file->private_data;
 	char buf[32];
-	unsigned int len;
+	size_t len;
 	u8 spectral_count;
 
 	mutex_lock(&ar->conf_mutex);
@@ -413,7 +430,8 @@ static ssize_t read_file_spectral_bins(struct file *file,
 {
 	struct ath10k *ar = file->private_data;
 	char buf[32];
-	unsigned int len, bins, fft_size, bin_scale;
+	unsigned int bins, fft_size, bin_scale;
+	size_t len;
 
 	mutex_lock(&ar->conf_mutex);
 
@@ -518,20 +536,23 @@ int ath10k_spectral_vif_stop(struct ath10k_vif *arvif)
 
 int ath10k_spectral_create(struct ath10k *ar)
 {
+	/* The buffer size covers whole channels in dual bands up to 128 bins.
+	 * Scan with bigger than 128 bins needs to be run on single band each.
+	 */
 	ar->spectral.rfs_chan_spec_scan = relay_open("spectral_scan",
 						     ar->debug.debugfs_phy,
-						     1024, 256,
+						     1140, 2500,
 						     &rfs_spec_scan_cb, NULL);
 	debugfs_create_file("spectral_scan_ctl",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    ar->debug.debugfs_phy, ar,
 			    &fops_spec_scan_ctl);
 	debugfs_create_file("spectral_count",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    ar->debug.debugfs_phy, ar,
 			    &fops_spectral_count);
 	debugfs_create_file("spectral_bins",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    ar->debug.debugfs_phy, ar,
 			    &fops_spectral_bins);
 

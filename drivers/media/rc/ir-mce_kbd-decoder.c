@@ -71,7 +71,7 @@ static unsigned char kbd_keycodes[256] = {
 	KEY_6,		KEY_7,		KEY_8,		KEY_9,		KEY_0,
 	KEY_ENTER,	KEY_ESC,	KEY_BACKSPACE,	KEY_TAB,	KEY_SPACE,
 	KEY_MINUS,	KEY_EQUAL,	KEY_LEFTBRACE,	KEY_RIGHTBRACE,	KEY_BACKSLASH,
-	KEY_RESERVED,	KEY_SEMICOLON,	KEY_APOSTROPHE,	KEY_GRAVE,	KEY_COMMA,
+	KEY_BACKSLASH,	KEY_SEMICOLON,	KEY_APOSTROPHE,	KEY_GRAVE,	KEY_COMMA,
 	KEY_DOT,	KEY_SLASH,	KEY_CAPSLOCK,	KEY_F1,		KEY_F2,
 	KEY_F3,		KEY_F4,		KEY_F5,		KEY_F6,		KEY_F7,
 	KEY_F8,		KEY_F9,		KEY_F10,	KEY_F11,	KEY_F12,
@@ -215,9 +215,6 @@ static int ir_mce_kbd_decode(struct rc_dev *dev, struct ir_raw_event ev)
 	struct mce_kbd_dec *data = &dev->raw->mce_kbd;
 	u32 scancode;
 	unsigned long delay;
-
-	if (!(dev->enabled_protocols & RC_BIT_MCE_KBD))
-		return 0;
 
 	if (!is_timing_event(ev)) {
 		if (ev.reset)

@@ -11,7 +11,10 @@
  */
 
 #include <linux/errno.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/task_stack.h>
+#include <linux/sched/cputime.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
@@ -39,7 +42,7 @@
 
 #include <asm/fpu.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/sysinfo.h>
 #include <asm/thread_info.h>
 #include <asm/hwrpb.h>
@@ -147,7 +150,7 @@ SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
 		long __user *, basep)
 {
 	int error;
-	struct fd arg = fdget(fd);
+	struct fd arg = fdget_pos(fd);
 	struct osf_dirent_callback buf = {
 		.ctx.actor = osf_filldir,
 		.dirent = dirent,
@@ -164,7 +167,7 @@ SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
 	if (count != buf.count)
 		error = count - buf.count;
 
-	fdput(arg);
+	fdput_pos(arg);
 	return error;
 }
 
@@ -1013,27 +1016,33 @@ SYSCALL_DEFINE2(osf_gettimeofday, struct timeval32 __user *, tv,
 SYSCALL_DEFINE2(osf_settimeofday, struct timeval32 __user *, tv,
 		struct timezone __user *, tz)
 {
+	struct timespec64 kts64;
 	struct timespec kts;
 	struct timezone ktz;
 
  	if (tv) {
 		if (get_tv32((struct timeval *)&kts, tv))
 			return -EFAULT;
+		kts.tv_nsec *= 1000;
+		kts64 = timespec_to_timespec64(kts);
 	}
 	if (tz) {
 		if (copy_from_user(&ktz, tz, sizeof(*tz)))
 			return -EFAULT;
 	}
 
-	kts.tv_nsec *= 1000;
-
-	return do_sys_settimeofday(tv ? &kts : NULL, tz ? &ktz : NULL);
+	return do_sys_settimeofday64(tv ? &kts64 : NULL, tz ? &ktz : NULL);
 }
+
+asmlinkage long sys_ni_posix_timers(void);
 
 SYSCALL_DEFINE2(osf_getitimer, int, which, struct itimerval32 __user *, it)
 {
 	struct itimerval kit;
 	int error;
+
+	if (!IS_ENABLED(CONFIG_POSIX_TIMERS))
+		return sys_ni_posix_timers();
 
 	error = do_getitimer(which, &kit);
 	if (!error && put_it32(it, &kit))
@@ -1047,6 +1056,9 @@ SYSCALL_DEFINE3(osf_setitimer, int, which, struct itimerval32 __user *, in,
 {
 	struct itimerval kin, kout;
 	int error;
+
+	if (!IS_ENABLED(CONFIG_POSIX_TIMERS))
+		return sys_ni_posix_timers();
 
 	if (in) {
 		if (get_it32(&kin, in))
@@ -1138,7 +1150,8 @@ struct rusage32 {
 SYSCALL_DEFINE2(osf_getrusage, int, who, struct rusage32 __user *, ru)
 {
 	struct rusage32 r;
-	cputime_t utime, stime;
+	u64 utime, stime;
+	unsigned long utime_jiffies, stime_jiffies;
 
 	if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN)
 		return -EINVAL;
@@ -1147,14 +1160,18 @@ SYSCALL_DEFINE2(osf_getrusage, int, who, struct rusage32 __user *, ru)
 	switch (who) {
 	case RUSAGE_SELF:
 		task_cputime(current, &utime, &stime);
-		jiffies_to_timeval32(utime, &r.ru_utime);
-		jiffies_to_timeval32(stime, &r.ru_stime);
+		utime_jiffies = nsecs_to_jiffies(utime);
+		stime_jiffies = nsecs_to_jiffies(stime);
+		jiffies_to_timeval32(utime_jiffies, &r.ru_utime);
+		jiffies_to_timeval32(stime_jiffies, &r.ru_stime);
 		r.ru_minflt = current->min_flt;
 		r.ru_majflt = current->maj_flt;
 		break;
 	case RUSAGE_CHILDREN:
-		jiffies_to_timeval32(current->signal->cutime, &r.ru_utime);
-		jiffies_to_timeval32(current->signal->cstime, &r.ru_stime);
+		utime_jiffies = nsecs_to_jiffies(current->signal->cutime);
+		stime_jiffies = nsecs_to_jiffies(current->signal->cstime);
+		jiffies_to_timeval32(utime_jiffies, &r.ru_utime);
+		jiffies_to_timeval32(stime_jiffies, &r.ru_stime);
 		r.ru_minflt = current->signal->cmin_flt;
 		r.ru_majflt = current->signal->cmaj_flt;
 		break;
@@ -1275,7 +1292,7 @@ SYSCALL_DEFINE1(old_adjtimex, struct timex32 __user *, txc_p)
 	/* copy relevant bits of struct timex. */
 	if (copy_from_user(&txc, txc_p, offsetof(struct timex32, time)) ||
 	    copy_from_user(&txc.tick, &txc_p->tick, sizeof(struct timex32) - 
-			   offsetof(struct timex32, time)))
+			   offsetof(struct timex32, tick)))
 	  return -EFAULT;
 
 	ret = do_adjtimex(&txc);	

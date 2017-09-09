@@ -10,8 +10,8 @@
 #include <linux/gfp.h>
 #include <linux/moduleparam.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <sound/pcm.h>
-#include <asm/io.h>
 #include "pcsp.h"
 
 static bool nforce_wa;
@@ -166,7 +166,7 @@ static int pcsp_start_playing(struct snd_pcsp *chip)
 	atomic_set(&chip->timer_active, 1);
 	chip->thalf = 0;
 
-	hrtimer_start(&pcsp_chip.timer, ktime_set(0, 0), HRTIMER_MODE_REL);
+	hrtimer_start(&pcsp_chip.timer, 0, HRTIMER_MODE_REL);
 	return 0;
 }
 

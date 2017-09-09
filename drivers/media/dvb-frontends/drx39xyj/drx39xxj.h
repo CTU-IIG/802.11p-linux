@@ -13,10 +13,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.=
  */
 
 #ifndef DRX39XXJ_H
@@ -34,7 +30,7 @@ struct drx39xxj_state {
 	const struct firmware *fw;
 };
 
-#if IS_ENABLED(CONFIG_DVB_DRX39XYJ)
+#if IS_REACHABLE(CONFIG_DVB_DRX39XYJ)
 struct dvb_frontend *drx39xxj_attach(struct i2c_adapter *i2c);
 #else
 static inline struct dvb_frontend *drx39xxj_attach(struct i2c_adapter *i2c) {

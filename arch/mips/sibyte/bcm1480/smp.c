@@ -21,6 +21,7 @@
 #include <linux/smp.h>
 #include <linux/kernel_stat.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 
 #include <asm/mmu_context.h>
 #include <asm/io.h>
@@ -28,8 +29,6 @@
 #include <asm/sibyte/sb1250.h>
 #include <asm/sibyte/bcm1480_regs.h>
 #include <asm/sibyte/bcm1480_int.h>
-
-extern void smp_call_function_interrupt(void);
 
 /*
  * These are routines for dealing with the bcm1480 smp capabilities
@@ -184,6 +183,9 @@ void bcm1480_mailbox_interrupt(void)
 	if (action & SMP_RESCHEDULE_YOURSELF)
 		scheduler_ipi();
 
-	if (action & SMP_CALL_FUNCTION)
-		smp_call_function_interrupt();
+	if (action & SMP_CALL_FUNCTION) {
+		irq_enter();
+		generic_smp_call_function_interrupt();
+		irq_exit();
+	}
 }

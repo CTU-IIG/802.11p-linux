@@ -129,16 +129,6 @@ static inline u32 usbhs_read(void __iomem *base, u32 reg)
 	return readl_relaxed(base + reg);
 }
 
-static inline void usbhs_writeb(void __iomem *base, u8 reg, u8 val)
-{
-	writeb_relaxed(val, base + reg);
-}
-
-static inline u8 usbhs_readb(void __iomem *base, u8 reg)
-{
-	return readb_relaxed(base + reg);
-}
-
 /*-------------------------------------------------------------------------*/
 
 /**
@@ -172,7 +162,7 @@ static const char * const port_modes[] = {
  * provided port mode string as per the port_modes table.
  * If no match is found it returns -ENODEV
  */
-static const int omap_usbhs_get_dt_port_mode(const char *mode)
+static int omap_usbhs_get_dt_port_mode(const char *mode)
 {
 	int i;
 

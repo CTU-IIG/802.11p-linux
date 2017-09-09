@@ -16,7 +16,6 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
-#include <linux/m48t86.h>
 #include <linux/mtd/nand.h>
 #include <linux/mtd/partitions.h>
 
@@ -45,16 +44,6 @@ static struct map_desc ts72xx_io_desc[] __initdata = {
 		.pfn		= __phys_to_pfn(TS72XX_OPTIONS2_PHYS_BASE),
 		.length		= TS72XX_OPTIONS2_SIZE,
 		.type		= MT_DEVICE,
-	}, {
-		.virtual	= (unsigned long)TS72XX_RTC_INDEX_VIRT_BASE,
-		.pfn		= __phys_to_pfn(TS72XX_RTC_INDEX_PHYS_BASE),
-		.length		= TS72XX_RTC_INDEX_SIZE,
-		.type		= MT_DEVICE,
-	}, {
-		.virtual	= (unsigned long)TS72XX_RTC_DATA_VIRT_BASE,
-		.pfn		= __phys_to_pfn(TS72XX_RTC_DATA_PHYS_BASE),
-		.length		= TS72XX_RTC_DATA_SIZE,
-		.type		= MT_DEVICE,
 	}
 };
 
@@ -74,7 +63,7 @@ static void __init ts72xx_map_io(void)
 static void ts72xx_nand_hwcontrol(struct mtd_info *mtd,
 				  int cmd, unsigned int ctrl)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 
 	if (ctrl & NAND_CTRL_CHANGE) {
 		void __iomem *addr = chip->IO_ADDR_R;
@@ -96,7 +85,7 @@ static void ts72xx_nand_hwcontrol(struct mtd_info *mtd,
 
 static int ts72xx_nand_device_ready(struct mtd_info *mtd)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 	void __iomem *addr = chip->IO_ADDR_R;
 
 	addr += (1 << TS72XX_NAND_BUSY_ADDR_LINE);
@@ -179,31 +168,22 @@ static void __init ts72xx_register_flash(void)
 	}
 }
 
+/*************************************************************************
+ * RTC M48T86
+ *************************************************************************/
+#define TS72XX_RTC_INDEX_PHYS_BASE	(EP93XX_CS1_PHYS_BASE + 0x00800000)
+#define TS72XX_RTC_DATA_PHYS_BASE	(EP93XX_CS1_PHYS_BASE + 0x01700000)
 
-static unsigned char ts72xx_rtc_readbyte(unsigned long addr)
-{
-	__raw_writeb(addr, TS72XX_RTC_INDEX_VIRT_BASE);
-	return __raw_readb(TS72XX_RTC_DATA_VIRT_BASE);
-}
-
-static void ts72xx_rtc_writebyte(unsigned char value, unsigned long addr)
-{
-	__raw_writeb(addr, TS72XX_RTC_INDEX_VIRT_BASE);
-	__raw_writeb(value, TS72XX_RTC_DATA_VIRT_BASE);
-}
-
-static struct m48t86_ops ts72xx_rtc_ops = {
-	.readbyte	= ts72xx_rtc_readbyte,
-	.writebyte	= ts72xx_rtc_writebyte,
+static struct resource ts72xx_rtc_resources[] = {
+	DEFINE_RES_MEM(TS72XX_RTC_INDEX_PHYS_BASE, 0x01),
+	DEFINE_RES_MEM(TS72XX_RTC_DATA_PHYS_BASE, 0x01),
 };
 
 static struct platform_device ts72xx_rtc_device = {
 	.name		= "rtc-m48t86",
 	.id		= -1,
-	.dev		= {
-		.platform_data	= &ts72xx_rtc_ops,
-	},
-	.num_resources	= 0,
+	.resource	= ts72xx_rtc_resources,
+	.num_resources 	= ARRAY_SIZE(ts72xx_rtc_resources),
 };
 
 static struct resource ts72xx_wdt_resources[] = {

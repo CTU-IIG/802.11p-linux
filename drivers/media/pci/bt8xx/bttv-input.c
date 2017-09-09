@@ -12,10 +12,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -185,8 +181,8 @@ static u32 bttv_rc5_decode(unsigned int code)
 			return 0;
 		}
 	}
-	dprintk("code=%x, rc5=%x, start=%x, toggle=%x, address=%x, "
-		"instr=%x\n", rc5, org_code, RC5_START(rc5),
+	dprintk("code=%x, rc5=%x, start=%x, toggle=%x, address=%x, instr=%x\n",
+		rc5, org_code, RC5_START(rc5),
 		RC5_TOGGLE(rc5), RC5_ADDR(rc5), RC5_INSTR(rc5));
 	return rc5;
 }
@@ -194,21 +190,18 @@ static u32 bttv_rc5_decode(unsigned int code)
 static void bttv_rc5_timer_end(unsigned long data)
 {
 	struct bttv_ir *ir = (struct bttv_ir *)data;
-	struct timeval tv;
+	ktime_t tv;
 	u32 gap, rc5, scancode;
 	u8 toggle, command, system;
 
 	/* get time */
-	do_gettimeofday(&tv);
+	tv = ktime_get();
 
+	gap = ktime_to_us(ktime_sub(tv, ir->base_time));
 	/* avoid overflow with gap >1s */
-	if (tv.tv_sec - ir->base_time.tv_sec > 1) {
+	if (gap > USEC_PER_SEC) {
 		gap = 200000;
-	} else {
-		gap = 1000000 * (tv.tv_sec - ir->base_time.tv_sec) +
-		    tv.tv_usec - ir->base_time.tv_usec;
 	}
-
 	/* signal we're ready to start a new code */
 	ir->active = false;
 
@@ -249,7 +242,7 @@ static void bttv_rc5_timer_end(unsigned long data)
 static int bttv_rc5_irq(struct bttv *btv)
 {
 	struct bttv_ir *ir = btv->remote;
-	struct timeval tv;
+	ktime_t tv;
 	u32 gpio;
 	u32 gap;
 	unsigned long current_jiffies;
@@ -259,14 +252,12 @@ static int bttv_rc5_irq(struct bttv *btv)
 
 	/* get time of bit */
 	current_jiffies = jiffies;
-	do_gettimeofday(&tv);
+	tv = ktime_get();
 
+	gap = ktime_to_us(ktime_sub(tv, ir->base_time));
 	/* avoid overflow with gap >1s */
-	if (tv.tv_sec - ir->base_time.tv_sec > 1) {
+	if (gap > USEC_PER_SEC) {
 		gap = 200000;
-	} else {
-		gap = 1000000 * (tv.tv_sec - ir->base_time.tv_sec) +
-		    tv.tv_usec - ir->base_time.tv_usec;
 	}
 
 	dprintk("RC5 IRQ: gap %d us for %s\n",
@@ -429,7 +420,7 @@ int bttv_input_init(struct bttv *btv)
 		return -ENODEV;
 
 	ir = kzalloc(sizeof(*ir),GFP_KERNEL);
-	rc = rc_allocate_device();
+	rc = rc_allocate_device(RC_DRIVER_SCANCODE);
 	if (!ir || !rc)
 		goto err_out_free;
 

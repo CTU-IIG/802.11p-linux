@@ -127,7 +127,6 @@ static int ar1021_i2c_probe(struct i2c_client *client,
 		return error;
 	}
 
-	i2c_set_clientdata(client, ar1021);
 	return 0;
 }
 
@@ -157,7 +156,7 @@ static const struct i2c_device_id ar1021_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, ar1021_i2c_id);
 
-static struct of_device_id ar1021_i2c_of_match[] = {
+static const struct of_device_id ar1021_i2c_of_match[] = {
 	{ .compatible = "microchip,ar1021-i2c", },
 	{ }
 };
@@ -166,7 +165,6 @@ MODULE_DEVICE_TABLE(of, ar1021_i2c_of_match);
 static struct i2c_driver ar1021_i2c_driver = {
 	.driver	= {
 		.name	= "ar1021_i2c",
-		.owner	= THIS_MODULE,
 		.pm	= &ar1021_i2c_pm,
 		.of_match_table = ar1021_i2c_of_match,
 	},

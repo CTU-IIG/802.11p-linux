@@ -153,13 +153,19 @@ int ebitmap_netlbl_import(struct ebitmap *ebmap,
 		if (offset == (u32)-1)
 			return 0;
 
+		/* don't waste ebitmap space if the netlabel bitmap is empty */
+		if (bitmap == 0) {
+			offset += EBITMAP_UNIT_SIZE;
+			continue;
+		}
+
 		if (e_iter == NULL ||
 		    offset >= e_iter->startbit + EBITMAP_SIZE) {
 			e_prev = e_iter;
 			e_iter = kzalloc(sizeof(*e_iter), GFP_ATOMIC);
 			if (e_iter == NULL)
 				goto netlbl_import_failure;
-			e_iter->startbit = offset & ~(EBITMAP_SIZE - 1);
+			e_iter->startbit = offset - (offset % EBITMAP_SIZE);
 			if (e_prev == NULL)
 				ebmap->node = e_iter;
 			else
@@ -354,7 +360,7 @@ int ebitmap_read(struct ebitmap *e, void *fp)
 
 	if (mapunit != BITS_PER_U64) {
 		printk(KERN_ERR "SELinux: ebitmap: map size %u does not "
-		       "match my size %Zd (high bit was %d)\n",
+		       "match my size %zd (high bit was %d)\n",
 		       mapunit, BITS_PER_U64, e->highbit);
 		goto bad;
 	}
@@ -367,6 +373,9 @@ int ebitmap_read(struct ebitmap *e, void *fp)
 		e->node = NULL;
 		goto ok;
 	}
+
+	if (e->highbit && !count)
+		goto bad;
 
 	for (i = 0; i < count; i++) {
 		rc = next_entry(&startbit, fp, sizeof(u32));

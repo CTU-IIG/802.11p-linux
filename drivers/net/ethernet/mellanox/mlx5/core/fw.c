@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, Mellanox Technologies inc.  All rights reserved.
+ * Copyright (c) 2013-2015, Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -35,74 +35,163 @@
 #include <linux/module.h>
 #include "mlx5_core.h"
 
-int mlx5_cmd_query_adapter(struct mlx5_core_dev *dev)
+static int mlx5_cmd_query_adapter(struct mlx5_core_dev *dev, u32 *out,
+				  int outlen)
 {
-	struct mlx5_cmd_query_adapter_mbox_out *out;
-	struct mlx5_cmd_query_adapter_mbox_in in;
+	u32 in[MLX5_ST_SZ_DW(query_adapter_in)] = {0};
+
+	MLX5_SET(query_adapter_in, in, opcode, MLX5_CMD_OP_QUERY_ADAPTER);
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, outlen);
+}
+
+int mlx5_query_board_id(struct mlx5_core_dev *dev)
+{
+	u32 *out;
+	int outlen = MLX5_ST_SZ_BYTES(query_adapter_out);
 	int err;
 
-	out = kzalloc(sizeof(*out), GFP_KERNEL);
+	out = kzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
-	memset(&in, 0, sizeof(in));
-	in.hdr.opcode = cpu_to_be16(MLX5_CMD_OP_QUERY_ADAPTER);
-	err = mlx5_cmd_exec(dev, &in, sizeof(in), out, sizeof(*out));
+	err = mlx5_cmd_query_adapter(dev, out, outlen);
 	if (err)
-		goto out_out;
+		goto out;
 
-	if (out->hdr.status) {
-		err = mlx5_cmd_status_to_err(&out->hdr);
-		goto out_out;
-	}
+	memcpy(dev->board_id,
+	       MLX5_ADDR_OF(query_adapter_out, out,
+			    query_adapter_struct.vsd_contd_psid),
+	       MLX5_FLD_SZ_BYTES(query_adapter_out,
+				 query_adapter_struct.vsd_contd_psid));
 
-	memcpy(dev->board_id, out->vsd_psid, sizeof(out->vsd_psid));
-
-out_out:
+out:
 	kfree(out);
-
 	return err;
 }
 
-int mlx5_cmd_query_hca_cap(struct mlx5_core_dev *dev, struct mlx5_caps *caps)
+int mlx5_core_query_vendor_id(struct mlx5_core_dev *mdev, u32 *vendor_id)
 {
-	return mlx5_core_get_caps(dev, caps, HCA_CAP_OPMOD_GET_CUR);
+	u32 *out;
+	int outlen = MLX5_ST_SZ_BYTES(query_adapter_out);
+	int err;
+
+	out = kzalloc(outlen, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+
+	err = mlx5_cmd_query_adapter(mdev, out, outlen);
+	if (err)
+		goto out;
+
+	*vendor_id = MLX5_GET(query_adapter_out, out,
+			      query_adapter_struct.ieee_vendor_id);
+out:
+	kfree(out);
+	return err;
+}
+EXPORT_SYMBOL(mlx5_core_query_vendor_id);
+
+static int mlx5_get_pcam_reg(struct mlx5_core_dev *dev)
+{
+	return mlx5_query_pcam_reg(dev, dev->caps.pcam,
+				   MLX5_PCAM_FEATURE_ENHANCED_FEATURES,
+				   MLX5_PCAM_REGS_5000_TO_507F);
+}
+
+static int mlx5_get_mcam_reg(struct mlx5_core_dev *dev)
+{
+	return mlx5_query_mcam_reg(dev, dev->caps.mcam,
+				   MLX5_MCAM_FEATURE_ENHANCED_FEATURES,
+				   MLX5_MCAM_REGS_FIRST_128);
+}
+
+int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
+{
+	int err;
+
+	err = mlx5_core_get_caps(dev, MLX5_CAP_GENERAL);
+	if (err)
+		return err;
+
+	if (MLX5_CAP_GEN(dev, eth_net_offloads)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ETHERNET_OFFLOADS);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, pg)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ODP);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, atomic)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ATOMIC);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, roce)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ROCE);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, nic_flow_table) ||
+	    MLX5_CAP_GEN(dev, ipoib_enhanced_offloads)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_FLOW_TABLE);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, vport_group_manager) &&
+	    MLX5_CAP_GEN(dev, eswitch_flow_table)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH_FLOW_TABLE);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, eswitch_flow_table)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, vector_calc)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_VECTOR_CALC);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, qos)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_QOS);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, pcam_reg))
+		mlx5_get_pcam_reg(dev);
+
+	if (MLX5_CAP_GEN(dev, mcam_reg))
+		mlx5_get_mcam_reg(dev);
+
+	return 0;
 }
 
 int mlx5_cmd_init_hca(struct mlx5_core_dev *dev)
 {
-	struct mlx5_cmd_init_hca_mbox_in in;
-	struct mlx5_cmd_init_hca_mbox_out out;
-	int err;
+	u32 out[MLX5_ST_SZ_DW(init_hca_out)] = {0};
+	u32 in[MLX5_ST_SZ_DW(init_hca_in)]   = {0};
 
-	memset(&in, 0, sizeof(in));
-	memset(&out, 0, sizeof(out));
-	in.hdr.opcode = cpu_to_be16(MLX5_CMD_OP_INIT_HCA);
-	err = mlx5_cmd_exec(dev, &in, sizeof(in), &out, sizeof(out));
-	if (err)
-		return err;
-
-	if (out.hdr.status)
-		err = mlx5_cmd_status_to_err(&out.hdr);
-
-	return err;
+	MLX5_SET(init_hca_in, in, opcode, MLX5_CMD_OP_INIT_HCA);
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
 }
 
 int mlx5_cmd_teardown_hca(struct mlx5_core_dev *dev)
 {
-	struct mlx5_cmd_teardown_hca_mbox_in in;
-	struct mlx5_cmd_teardown_hca_mbox_out out;
-	int err;
+	u32 out[MLX5_ST_SZ_DW(teardown_hca_out)] = {0};
+	u32 in[MLX5_ST_SZ_DW(teardown_hca_in)]   = {0};
 
-	memset(&in, 0, sizeof(in));
-	memset(&out, 0, sizeof(out));
-	in.hdr.opcode = cpu_to_be16(MLX5_CMD_OP_TEARDOWN_HCA);
-	err = mlx5_cmd_exec(dev, &in, sizeof(in), &out, sizeof(out));
-	if (err)
-		return err;
-
-	if (out.hdr.status)
-		err = mlx5_cmd_status_to_err(&out.hdr);
-
-	return err;
+	MLX5_SET(teardown_hca_in, in, opcode, MLX5_CMD_OP_TEARDOWN_HCA);
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
 }

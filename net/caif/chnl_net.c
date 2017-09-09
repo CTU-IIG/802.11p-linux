@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/if_ether.h>
-#include <linux/moduleparam.h>
 #include <linux/ip.h>
 #include <linux/sched.h>
 #include <linux/sockios.h>
@@ -45,7 +44,6 @@ enum caif_states {
 
 struct chnl_net {
 	struct cflayer chnl;
-	struct net_device_stats stats;
 	struct caif_connect_request conn_req;
 	struct list_head list_field;
 	struct net_device *netdev;
@@ -470,7 +468,6 @@ static int ipcaif_newlink(struct net *src_net, struct net_device *dev,
 	ASSERT_RTNL();
 	caifdev = netdev_priv(dev);
 	caif_netlink_parms(data, &caifdev->conn_req);
-	dev_net_set(caifdev->netdev, src_net);
 
 	ret = register_netdevice(dev);
 	if (ret)

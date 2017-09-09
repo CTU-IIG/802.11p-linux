@@ -20,6 +20,7 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/input.h>
+#include <linux/io.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
@@ -28,10 +29,6 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 
-#include <asm/mach/arch.h>
-#include <asm/mach/map.h>
-
-#include <mach/hardware.h>
 #include <linux/platform_data/keypad-pxa27x.h>
 /*
  * Keypad Controller registers
@@ -129,7 +126,7 @@ static int pxa27x_keypad_matrix_key_parse_dt(struct pxa27x_keypad *keypad,
 	u32 rows, cols;
 	int error;
 
-	error = matrix_keypad_parse_of_params(dev, &rows, &cols);
+	error = matrix_keypad_parse_properties(dev, &rows, &cols);
 	if (error)
 		return error;
 
@@ -319,7 +316,7 @@ static int pxa27x_keypad_build_keycode_from_dt(struct pxa27x_keypad *keypad)
 	error = of_property_read_u32(np, "marvell,debounce-interval",
 				     &pdata->debounce_interval);
 	if (error) {
-		dev_err(dev, "failed to parse debpunce-interval\n");
+		dev_err(dev, "failed to parse debounce-interval\n");
 		return error;
 	}
 
@@ -348,13 +345,11 @@ static int pxa27x_keypad_build_keycode(struct pxa27x_keypad *keypad)
 {
 	const struct pxa27x_keypad_platform_data *pdata = keypad->pdata;
 	struct input_dev *input_dev = keypad->input_dev;
-	const struct matrix_keymap_data *keymap_data =
-				pdata ? pdata->matrix_keymap_data : NULL;
 	unsigned short keycode;
 	int i;
 	int error;
 
-	error = matrix_keypad_build_keymap(keymap_data, NULL,
+	error = matrix_keypad_build_keymap(pdata->matrix_keymap_data, NULL,
 					   pdata->matrix_key_rows,
 					   pdata->matrix_key_cols,
 					   keypad->keycodes, input_dev);

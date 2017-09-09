@@ -15,11 +15,11 @@
 #include <linux/kernel.h>
 #include <linux/cpuidle.h>
 #include <linux/pm_qos.h>
-#include <linux/module.h>
 #include <linux/jiffies.h>
+#include <linux/tick.h>
 
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #define PROMOTION_COUNT 4
 #define DEMOTION_COUNT 1
@@ -79,12 +79,7 @@ static int ladder_select_state(struct cpuidle_driver *drv,
 
 	last_state = &ldev->states[last_idx];
 
-	if (!(drv->states[last_idx].flags & CPUIDLE_FLAG_TIME_INVALID)) {
-		last_residency = cpuidle_get_last_residency(dev) - \
-					 drv->states[last_idx].exit_latency;
-	}
-	else
-		last_residency = last_state->threshold.promotion_time + 1;
+	last_residency = cpuidle_get_last_residency(dev) - drv->states[last_idx].exit_latency;
 
 	/* consider promotion */
 	if (last_idx < drv->state_count - 1 &&
@@ -181,7 +176,6 @@ static struct cpuidle_governor ladder_governor = {
 	.enable =	ladder_enable_device,
 	.select =	ladder_select_state,
 	.reflect =	ladder_reflect,
-	.owner =	THIS_MODULE,
 };
 
 /**
@@ -189,6 +183,14 @@ static struct cpuidle_governor ladder_governor = {
  */
 static int __init init_ladder(void)
 {
+	/*
+	 * When NO_HZ is disabled, or when booting with nohz=off, the ladder
+	 * governor is better so give it a higher rating than the menu
+	 * governor.
+	 */
+	if (!tick_nohz_enabled)
+		ladder_governor.rating = 25;
+
 	return cpuidle_register_governor(&ladder_governor);
 }
 

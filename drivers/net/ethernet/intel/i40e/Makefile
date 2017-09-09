@@ -1,7 +1,7 @@
 ################################################################################
 #
 # Intel Ethernet Controller XL710 Family Linux Driver
-# Copyright(c) 2013 - 2014 Intel Corporation.
+# Copyright(c) 2013 - 2015 Intel Corporation.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms and conditions of the GNU General Public License,
@@ -28,6 +28,9 @@
 # Makefile for the Intel(R) Ethernet Connection XL710 (i40e.ko) driver
 #
 
+ccflags-y += -I$(src)
+subdir-ccflags-y += -I$(src)
+
 obj-$(CONFIG_I40E) += i40e.o
 
 i40e-objs := i40e_main.o \
@@ -41,7 +44,7 @@ i40e-objs := i40e_main.o \
 	i40e_diag.o	\
 	i40e_txrx.o	\
 	i40e_ptp.o	\
+	i40e_client.o   \
 	i40e_virtchnl_pf.o
 
 i40e-$(CONFIG_I40E_DCB) += i40e_dcb.o i40e_dcb_nl.o
-i40e-$(CONFIG_FCOE:m=y) += i40e_fcoe.o

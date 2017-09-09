@@ -63,7 +63,7 @@ static void bfin_writew(void __iomem *addr, unsigned offset, u16 data)
 	bfin_write16(addr + offset, data);
 }
 
-static void binf_writel(void __iomem *addr, unsigned offset, u32 data)
+static void bfin_writel(void __iomem *addr, unsigned offset, u32 data)
 {
 	bfin_write16(addr + offset, (u16)data);
 }
@@ -465,9 +465,11 @@ static int bfin_musb_exit(struct musb *musb)
 }
 
 static const struct musb_platform_ops bfin_ops = {
+	.quirks		= MUSB_DMA_INVENTRA,
 	.init		= bfin_musb_init,
 	.exit		= bfin_musb_exit,
 
+	.fifo_offset	= bfin_fifo_offset,
 	.readb		= bfin_readb,
 	.writeb		= bfin_writeb,
 	.readw		= bfin_readw,
@@ -477,6 +479,10 @@ static const struct musb_platform_ops bfin_ops = {
 	.fifo_mode	= 2,
 	.read_fifo	= bfin_read_fifo,
 	.write_fifo	= bfin_write_fifo,
+#ifdef CONFIG_USB_INVENTRA_DMA
+	.dma_init	= musbhs_dma_controller_create,
+	.dma_exit	= musbhs_dma_controller_destroy,
+#endif
 	.enable		= bfin_musb_enable,
 	.disable	= bfin_musb_disable,
 
@@ -575,8 +581,7 @@ static int bfin_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int bfin_suspend(struct device *dev)
+static int __maybe_unused bfin_suspend(struct device *dev)
 {
 	struct bfin_glue	*glue = dev_get_drvdata(dev);
 	struct musb		*musb = glue_to_musb(glue);
@@ -593,7 +598,7 @@ static int bfin_suspend(struct device *dev)
 	return 0;
 }
 
-static int bfin_resume(struct device *dev)
+static int __maybe_unused bfin_resume(struct device *dev)
 {
 	struct bfin_glue	*glue = dev_get_drvdata(dev);
 	struct musb		*musb = glue_to_musb(glue);
@@ -602,13 +607,12 @@ static int bfin_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(bfin_pm_ops, bfin_suspend, bfin_resume);
 
 static struct platform_driver bfin_driver = {
 	.probe		= bfin_probe,
-	.remove		= __exit_p(bfin_remove),
+	.remove		= bfin_remove,
 	.driver		= {
 		.name	= "musb-blackfin",
 		.pm	= &bfin_pm_ops,

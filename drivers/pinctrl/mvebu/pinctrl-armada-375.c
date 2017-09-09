@@ -14,7 +14,6 @@
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/of.h>
@@ -22,18 +21,6 @@
 #include <linux/pinctrl/pinctrl.h>
 
 #include "pinctrl-mvebu.h"
-
-static void __iomem *mpp_base;
-
-static int armada_375_mpp_ctrl_get(unsigned pid, unsigned long *config)
-{
-	return default_mpp_ctrl_get(mpp_base, pid, config);
-}
-
-static int armada_375_mpp_ctrl_set(unsigned pid, unsigned long config)
-{
-	return default_mpp_ctrl_set(mpp_base, pid, config);
-}
 
 static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 	MPP_MODE(0,
@@ -51,7 +38,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 	MPP_MODE(2,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x1, "dev", "ad4"),
-		 MPP_FUNCTION(0x2, "ptp", "eventreq"),
+		 MPP_FUNCTION(0x2, "ptp", "evreq"),
 		 MPP_FUNCTION(0x3, "led", "c0"),
 		 MPP_FUNCTION(0x4, "audio", "sdi"),
 		 MPP_FUNCTION(0x5, "nand", "io4"),
@@ -59,7 +46,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 	MPP_MODE(3,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x1, "dev", "ad5"),
-		 MPP_FUNCTION(0x2, "ptp", "triggen"),
+		 MPP_FUNCTION(0x2, "ptp", "trig"),
 		 MPP_FUNCTION(0x3, "led", "p3"),
 		 MPP_FUNCTION(0x4, "audio", "mclk"),
 		 MPP_FUNCTION(0x5, "nand", "io5"),
@@ -81,7 +68,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x1, "dev", "ad0"),
 		 MPP_FUNCTION(0x3, "led", "p1"),
-		 MPP_FUNCTION(0x4, "audio", "rclk"),
+		 MPP_FUNCTION(0x4, "audio", "lrclk"),
 		 MPP_FUNCTION(0x5, "nand", "io0")),
 	MPP_MODE(7,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
@@ -92,19 +79,17 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x5, "nand", "io1")),
 	MPP_MODE(8,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x1, "dev ", "bootcs"),
+		 MPP_FUNCTION(0x1, "dev", "bootcs"),
 		 MPP_FUNCTION(0x2, "spi0", "cs0"),
 		 MPP_FUNCTION(0x3, "spi1", "cs0"),
 		 MPP_FUNCTION(0x5, "nand", "ce")),
 	MPP_MODE(9,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x1, "nf", "wen"),
 		 MPP_FUNCTION(0x2, "spi0", "sck"),
 		 MPP_FUNCTION(0x3, "spi1", "sck"),
 		 MPP_FUNCTION(0x5, "nand", "we")),
 	MPP_MODE(10,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x1, "nf", "ren"),
 		 MPP_FUNCTION(0x2, "dram", "vttctrl"),
 		 MPP_FUNCTION(0x3, "led", "c1"),
 		 MPP_FUNCTION(0x5, "nand", "re"),
@@ -122,9 +107,9 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x5, "nand", "ale")),
 	MPP_MODE(13,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x1, "dev", "readyn"),
-		 MPP_FUNCTION(0x2, "pcie0", "rstoutn"),
-		 MPP_FUNCTION(0x3, "pcie1", "rstoutn"),
+		 MPP_FUNCTION(0x1, "dev", "ready"),
+		 MPP_FUNCTION(0x2, "pcie0", "rstout"),
+		 MPP_FUNCTION(0x3, "pcie1", "rstout"),
 		 MPP_FUNCTION(0x5, "nand", "rb"),
 		 MPP_FUNCTION(0x6, "spi1", "mosi")),
 	MPP_MODE(14,
@@ -143,10 +128,10 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x2, "uart0", "rxd")),
 	MPP_MODE(18,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x2, "tdm", "intn")),
+		 MPP_FUNCTION(0x2, "tdm", "int")),
 	MPP_MODE(19,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x2, "tdm", "rstn")),
+		 MPP_FUNCTION(0x2, "tdm", "rst")),
 	MPP_MODE(20,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x2, "tdm", "pclk")),
@@ -203,13 +188,13 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x2, "ge1", "rxclk"),
 		 MPP_FUNCTION(0x3, "sd", "d3"),
 		 MPP_FUNCTION(0x5, "spi0", "sck"),
-		 MPP_FUNCTION(0x6, "pcie0", "rstoutn")),
+		 MPP_FUNCTION(0x6, "pcie0", "rstout")),
 	MPP_MODE(30,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x2, "ge1", "txd0"),
 		 MPP_FUNCTION(0x3, "spi1", "cs0"),
 		 MPP_FUNCTION(0x5, "led", "p3"),
-		 MPP_FUNCTION(0x6, "ptp", "eventreq")),
+		 MPP_FUNCTION(0x6, "ptp", "evreq")),
 	MPP_MODE(31,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x2, "ge1", "txd1"),
@@ -219,7 +204,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x2, "ge1", "txd2"),
 		 MPP_FUNCTION(0x3, "spi1", "sck"),
-		 MPP_FUNCTION(0x4, "ptp", "triggen"),
+		 MPP_FUNCTION(0x4, "ptp", "trig"),
 		 MPP_FUNCTION(0x5, "led", "c0")),
 	MPP_MODE(33,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
@@ -244,7 +229,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 	MPP_MODE(37,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x1, "pcie0", "clkreq"),
-		 MPP_FUNCTION(0x2, "tdm", "intn"),
+		 MPP_FUNCTION(0x2, "tdm", "int"),
 		 MPP_FUNCTION(0x4, "ge", "mdc")),
 	MPP_MODE(38,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
@@ -278,7 +263,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 	MPP_MODE(45,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x2, "spi0", "cs2"),
-		 MPP_FUNCTION(0x4, "pcie0", "rstoutn"),
+		 MPP_FUNCTION(0x4, "pcie0", "rstout"),
 		 MPP_FUNCTION(0x5, "led", "c2"),
 		 MPP_FUNCTION(0x6, "spi1", "cs2")),
 	MPP_MODE(46,
@@ -286,13 +271,13 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x1, "led", "p0"),
 		 MPP_FUNCTION(0x2, "ge0", "txd0"),
 		 MPP_FUNCTION(0x3, "ge1", "txd0"),
-		 MPP_FUNCTION(0x6, "dev", "wen1")),
+		 MPP_FUNCTION(0x6, "dev", "we1")),
 	MPP_MODE(47,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x1, "led", "p1"),
 		 MPP_FUNCTION(0x2, "ge0", "txd1"),
 		 MPP_FUNCTION(0x3, "ge1", "txd1"),
-		 MPP_FUNCTION(0x5, "ptp", "triggen"),
+		 MPP_FUNCTION(0x5, "ptp", "trig"),
 		 MPP_FUNCTION(0x6, "dev", "ale0")),
 	MPP_MODE(48,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
@@ -311,7 +296,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x1, "led", "c0"),
 		 MPP_FUNCTION(0x2, "ge0", "rxd0"),
 		 MPP_FUNCTION(0x3, "ge1", "rxd0"),
-		 MPP_FUNCTION(0x5, "ptp", "eventreq"),
+		 MPP_FUNCTION(0x5, "ptp", "evreq"),
 		 MPP_FUNCTION(0x6, "dev", "ad12")),
 	MPP_MODE(51,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
@@ -328,14 +313,14 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x6, "dev", "ad9")),
 	MPP_MODE(53,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x1, "pcie1", "rstoutn"),
+		 MPP_FUNCTION(0x1, "pcie1", "rstout"),
 		 MPP_FUNCTION(0x2, "ge0", "rxd3"),
 		 MPP_FUNCTION(0x3, "ge1", "rxd3"),
 		 MPP_FUNCTION(0x5, "i2c0", "sck"),
 		 MPP_FUNCTION(0x6, "dev", "ad10")),
 	MPP_MODE(54,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x1, "pcie0", "rstoutn"),
+		 MPP_FUNCTION(0x1, "pcie0", "rstout"),
 		 MPP_FUNCTION(0x2, "ge0", "rxctl"),
 		 MPP_FUNCTION(0x3, "ge1", "rxctl"),
 		 MPP_FUNCTION(0x6, "dev", "ad11")),
@@ -353,7 +338,7 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x2, "ge0", "txctl"),
 		 MPP_FUNCTION(0x3, "ge1", "txctl"),
-		 MPP_FUNCTION(0x6, "dev", "wen0")),
+		 MPP_FUNCTION(0x6, "dev", "we0")),
 	MPP_MODE(58,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x4, "led", "c0")),
@@ -379,9 +364,9 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x6, "dev", "ad15")),
 	MPP_MODE(63,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x2, "ptp", "triggen"),
+		 MPP_FUNCTION(0x2, "ptp", "trig"),
 		 MPP_FUNCTION(0x4, "led", "p2"),
-		 MPP_FUNCTION(0x6, "dev", "burst")),
+		 MPP_FUNCTION(0x6, "dev", "burst/last")),
 	MPP_MODE(64,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
 		 MPP_FUNCTION(0x2, "dram", "vttctrl"),
@@ -391,21 +376,21 @@ static struct mvebu_mpp_mode mv88f6720_mpp_modes[] = {
 		 MPP_FUNCTION(0x1, "sata1", "prsnt")),
 	MPP_MODE(66,
 		 MPP_FUNCTION(0x0, "gpio", NULL),
-		 MPP_FUNCTION(0x2, "ptp", "eventreq"),
+		 MPP_FUNCTION(0x2, "ptp", "evreq"),
 		 MPP_FUNCTION(0x4, "spi1", "cs3"),
-		 MPP_FUNCTION(0x5, "pcie0", "rstoutn"),
+		 MPP_FUNCTION(0x5, "pcie0", "rstout"),
 		 MPP_FUNCTION(0x6, "dev", "cs3")),
 };
 
 static struct mvebu_pinctrl_soc_info armada_375_pinctrl_info;
 
-static struct of_device_id armada_375_pinctrl_of_match[] = {
+static const struct of_device_id armada_375_pinctrl_of_match[] = {
 	{ .compatible = "marvell,mv88f6720-pinctrl" },
 	{ },
 };
 
-static struct mvebu_mpp_ctrl mv88f6720_mpp_controls[] = {
-	MPP_FUNC_CTRL(0, 69, NULL, armada_375_mpp_ctrl),
+static const struct mvebu_mpp_ctrl mv88f6720_mpp_controls[] = {
+	MPP_FUNC_CTRL(0, 69, NULL, mvebu_mmio_mpp_ctrl),
 };
 
 static struct pinctrl_gpio_range mv88f6720_mpp_gpio_ranges[] = {
@@ -417,12 +402,6 @@ static struct pinctrl_gpio_range mv88f6720_mpp_gpio_ranges[] = {
 static int armada_375_pinctrl_probe(struct platform_device *pdev)
 {
 	struct mvebu_pinctrl_soc_info *soc = &armada_375_pinctrl_info;
-	struct resource *res;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mpp_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(mpp_base))
-		return PTR_ERR(mpp_base);
 
 	soc->variant = 0; /* no variants for Armada 375 */
 	soc->controls = mv88f6720_mpp_controls;
@@ -434,12 +413,7 @@ static int armada_375_pinctrl_probe(struct platform_device *pdev)
 
 	pdev->dev.platform_data = soc;
 
-	return mvebu_pinctrl_probe(pdev);
-}
-
-static int armada_375_pinctrl_remove(struct platform_device *pdev)
-{
-	return mvebu_pinctrl_remove(pdev);
+	return mvebu_pinctrl_simple_mmio_probe(pdev);
 }
 
 static struct platform_driver armada_375_pinctrl_driver = {
@@ -448,11 +422,5 @@ static struct platform_driver armada_375_pinctrl_driver = {
 		.of_match_table = of_match_ptr(armada_375_pinctrl_of_match),
 	},
 	.probe = armada_375_pinctrl_probe,
-	.remove = armada_375_pinctrl_remove,
 };
-
-module_platform_driver(armada_375_pinctrl_driver);
-
-MODULE_AUTHOR("Thomas Petazzoni <thomas.petazzoni@free-electrons.com>");
-MODULE_DESCRIPTION("Marvell Armada 375 pinctrl driver");
-MODULE_LICENSE("GPL v2");
+builtin_platform_driver(armada_375_pinctrl_driver);

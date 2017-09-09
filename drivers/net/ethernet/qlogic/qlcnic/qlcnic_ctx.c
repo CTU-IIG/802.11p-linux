@@ -73,8 +73,6 @@ int qlcnic_82xx_alloc_mbx_args(struct qlcnic_cmd_args *mbx,
 				mbx->req.arg = NULL;
 				return -ENOMEM;
 			}
-			memset(mbx->req.arg, 0, sizeof(u32) * mbx->req.num);
-			memset(mbx->rsp.arg, 0, sizeof(u32) * mbx->rsp.num);
 			mbx->req.arg[0] = type;
 			break;
 		}
@@ -575,8 +573,10 @@ int qlcnic_alloc_hw_resources(struct qlcnic_adapter *adapter)
 		ptr = (__le32 *)dma_alloc_coherent(&pdev->dev, sizeof(u32),
 						   &tx_ring->hw_cons_phys_addr,
 						   GFP_KERNEL);
-		if (ptr == NULL)
-			return -ENOMEM;
+		if (ptr == NULL) {
+			err = -ENOMEM;
+			goto err_out_free;
+		}
 
 		tx_ring->hw_consumer = ptr;
 		/* cmd desc ring */
@@ -774,8 +774,10 @@ int qlcnic_82xx_config_intrpt(struct qlcnic_adapter *adapter, u8 op_type)
 	int i, err = 0;
 
 	for (i = 0; i < ahw->num_msix; i++) {
-		qlcnic_alloc_mbx_args(&cmd, adapter,
-				      QLCNIC_CMD_MQ_TX_CONFIG_INTR);
+		err = qlcnic_alloc_mbx_args(&cmd, adapter,
+					    QLCNIC_CMD_MQ_TX_CONFIG_INTR);
+		if (err)
+			return err;
 		type = op_type ? QLCNIC_INTRPT_ADD : QLCNIC_INTRPT_DEL;
 		val = type | (ahw->intr_tbl[i].type << 4);
 		if (ahw->intr_tbl[i].type == QLCNIC_INTRPT_MSIX)

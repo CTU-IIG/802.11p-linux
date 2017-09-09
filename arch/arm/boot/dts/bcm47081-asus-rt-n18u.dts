@@ -10,6 +10,7 @@
 /dts-v1/;
 
 #include "bcm47081.dtsi"
+#include "bcm5301x-nand-cs0-bch8.dtsi"
 
 / {
 	compatible = "asus,rt-n18u", "brcm,bcm47081", "brcm,bcm4708";
@@ -20,7 +21,8 @@
 	};
 
 	memory {
-		reg = <0x00000000 0x08000000>;
+		reg = <0x00000000 0x08000000
+		       0x88000000 0x08000000>;
 	};
 
 	leds {
@@ -61,7 +63,6 @@
 		compatible = "gpio-keys";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		poll-interval = <200>;
 
 		restart {
 			label = "Reset";

@@ -15,8 +15,10 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
+#include <linux/gpio/machine.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/leds.h>
 #include <linux/i2c.h>
 #include <linux/platform_data/at24.h>
 #include <linux/platform_data/pca953x.h>
@@ -38,30 +40,23 @@
 #include <linux/regulator/fixed.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>
-#include <linux/wl12xx.h>
 
 #include <mach/common.h>
-#include <mach/cp_intc.h>
+#include "cp_intc.h"
 #include <mach/da8xx.h>
 #include <mach/mux.h>
-#include <mach/sram.h>
+#include "sram.h"
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/system_info.h>
 
-#include <media/tvp514x.h>
-#include <media/adv7343.h>
+#include <media/i2c/tvp514x.h>
+#include <media/i2c/adv7343.h>
 
 #define DA850_EVM_PHY_ID		"davinci_mdio-0:00"
 #define DA850_LCD_PWR_PIN		GPIO_TO_PIN(2, 8)
 #define DA850_LCD_BL_PIN		GPIO_TO_PIN(2, 15)
-
-#define DA850_MMCSD_CD_PIN		GPIO_TO_PIN(4, 0)
-#define DA850_MMCSD_WP_PIN		GPIO_TO_PIN(4, 1)
-
-#define DA850_WLAN_EN			GPIO_TO_PIN(6, 9)
-#define DA850_WLAN_IRQ			GPIO_TO_PIN(6, 10)
 
 #define DA850_MII_MDIO_CLKEN_PIN	GPIO_TO_PIN(2, 6)
 
@@ -198,18 +193,6 @@ static struct platform_device da850_evm_norflash_device = {
 	},
 	.num_resources	= 1,
 	.resource	= da850_evm_norflash_resource,
-};
-
-static struct davinci_pm_config da850_pm_pdata = {
-	.sleepcount = 128,
-};
-
-static struct platform_device da850_pm_device = {
-	.name           = "pm-davinci",
-	.dev = {
-		.platform_data	= &da850_pm_pdata,
-	},
-	.id             = -1,
 };
 
 /* DA850/OMAP-L138 EVM includes a 512 MByte large-page NAND flash
@@ -780,19 +763,16 @@ static const short da850_evm_mcasp_pins[] __initconst = {
 	-1
 };
 
-static int da850_evm_mmc_get_ro(int index)
-{
-	return gpio_get_value(DA850_MMCSD_WP_PIN);
-}
-
-static int da850_evm_mmc_get_cd(int index)
-{
-	return !gpio_get_value(DA850_MMCSD_CD_PIN);
-}
+static struct gpiod_lookup_table mmc_gpios_table = {
+	.dev_id = "da830-mmc.0",
+	.table = {
+		/* gpio chip 2 contains gpio range 64-95 */
+		GPIO_LOOKUP("davinci_gpio.2", 0, "cd", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("davinci_gpio.2", 1, "wp", GPIO_ACTIVE_LOW),
+	},
+};
 
 static struct davinci_mmc_config da850_mmc_config = {
-	.get_ro		= da850_evm_mmc_get_ro,
-	.get_cd		= da850_evm_mmc_get_cd,
 	.wires		= 4,
 	.max_freq	= 50000000,
 	.caps		= MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED,
@@ -1343,114 +1323,15 @@ static __init void da850_vpif_init(void)
 static __init void da850_vpif_init(void) {}
 #endif
 
-#ifdef CONFIG_DA850_WL12XX
-
-static void wl12xx_set_power(int index, bool power_on)
-{
-	static bool power_state;
-
-	pr_debug("Powering %s wl12xx", power_on ? "on" : "off");
-
-	if (power_on == power_state)
-		return;
-	power_state = power_on;
-
-	if (power_on) {
-		/* Power up sequence required for wl127x devices */
-		gpio_set_value(DA850_WLAN_EN, 1);
-		usleep_range(15000, 15000);
-		gpio_set_value(DA850_WLAN_EN, 0);
-		usleep_range(1000, 1000);
-		gpio_set_value(DA850_WLAN_EN, 1);
-		msleep(70);
-	} else {
-		gpio_set_value(DA850_WLAN_EN, 0);
-	}
-}
-
-static struct davinci_mmc_config da850_wl12xx_mmc_config = {
-	.set_power	= wl12xx_set_power,
-	.wires		= 4,
-	.max_freq	= 25000000,
-	.caps		= MMC_CAP_4_BIT_DATA | MMC_CAP_NONREMOVABLE |
-			  MMC_CAP_POWER_OFF_CARD,
-};
-
-static const short da850_wl12xx_pins[] __initconst = {
-	DA850_MMCSD1_DAT_0, DA850_MMCSD1_DAT_1, DA850_MMCSD1_DAT_2,
-	DA850_MMCSD1_DAT_3, DA850_MMCSD1_CLK, DA850_MMCSD1_CMD,
-	DA850_GPIO6_9, DA850_GPIO6_10,
-	-1
-};
-
-static struct wl12xx_platform_data da850_wl12xx_wlan_data __initdata = {
-	.irq			= -1,
-	.board_ref_clock	= WL12XX_REFCLOCK_38,
-	.platform_quirks	= WL12XX_PLATFORM_QUIRK_EDGE_IRQ,
-};
-
-static __init int da850_wl12xx_init(void)
-{
-	int ret;
-
-	ret = davinci_cfg_reg_list(da850_wl12xx_pins);
-	if (ret) {
-		pr_err("wl12xx/mmc mux setup failed: %d\n", ret);
-		goto exit;
-	}
-
-	ret = da850_register_mmcsd1(&da850_wl12xx_mmc_config);
-	if (ret) {
-		pr_err("wl12xx/mmc registration failed: %d\n", ret);
-		goto exit;
-	}
-
-	ret = gpio_request_one(DA850_WLAN_EN, GPIOF_OUT_INIT_LOW, "wl12xx_en");
-	if (ret) {
-		pr_err("Could not request wl12xx enable gpio: %d\n", ret);
-		goto exit;
-	}
-
-	ret = gpio_request_one(DA850_WLAN_IRQ, GPIOF_IN, "wl12xx_irq");
-	if (ret) {
-		pr_err("Could not request wl12xx irq gpio: %d\n", ret);
-		goto free_wlan_en;
-	}
-
-	da850_wl12xx_wlan_data.irq = gpio_to_irq(DA850_WLAN_IRQ);
-
-	ret = wl12xx_set_platform_data(&da850_wl12xx_wlan_data);
-	if (ret) {
-		pr_err("Could not set wl12xx data: %d\n", ret);
-		goto free_wlan_irq;
-	}
-
-	return 0;
-
-free_wlan_irq:
-	gpio_free(DA850_WLAN_IRQ);
-
-free_wlan_en:
-	gpio_free(DA850_WLAN_EN);
-
-exit:
-	return ret;
-}
-
-#else /* CONFIG_DA850_WL12XX */
-
-static __init int da850_wl12xx_init(void)
-{
-	return 0;
-}
-
-#endif /* CONFIG_DA850_WL12XX */
-
 #define DA850EVM_SATA_REFCLKPN_RATE	(100 * 1000 * 1000)
 
 static __init void da850_evm_init(void)
 {
 	int ret;
+
+	ret = da8xx_register_cfgchip();
+	if (ret)
+		pr_warn("%s: CFGCHIP registration failed: %d\n", __func__, ret);
 
 	ret = da850_register_gpio();
 	if (ret)
@@ -1486,26 +1367,11 @@ static __init void da850_evm_init(void)
 			pr_warn("%s: MMCSD0 mux setup failed: %d\n",
 				__func__, ret);
 
-		ret = gpio_request(DA850_MMCSD_CD_PIN, "MMC CD\n");
-		if (ret)
-			pr_warn("%s: can not open GPIO %d\n",
-				__func__, DA850_MMCSD_CD_PIN);
-		gpio_direction_input(DA850_MMCSD_CD_PIN);
-
-		ret = gpio_request(DA850_MMCSD_WP_PIN, "MMC WP\n");
-		if (ret)
-			pr_warn("%s: can not open GPIO %d\n",
-				__func__, DA850_MMCSD_WP_PIN);
-		gpio_direction_input(DA850_MMCSD_WP_PIN);
+		gpiod_add_lookup_table(&mmc_gpios_table);
 
 		ret = da8xx_register_mmcsd0(&da850_mmc_config);
 		if (ret)
 			pr_warn("%s: MMCSD0 registration failed: %d\n",
-				__func__, ret);
-
-		ret = da850_wl12xx_init();
-		if (ret)
-			pr_warn("%s: WL12xx initialization failed: %d\n",
 				__func__, ret);
 	}
 
@@ -1565,10 +1431,7 @@ static __init void da850_evm_init(void)
 	if (ret)
 		pr_warn("%s: cpuidle registration failed: %d\n", __func__, ret);
 
-	ret = da850_register_pm(&da850_pm_device);
-	if (ret)
-		pr_warn("%s: suspend registration failed: %d\n", __func__, ret);
-
+	davinci_pm_init();
 	da850_vpif_init();
 
 	ret = spi_register_board_info(da850evm_spi_info,

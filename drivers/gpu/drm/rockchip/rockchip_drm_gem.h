@@ -23,7 +23,15 @@ struct rockchip_gem_object {
 
 	void *kvaddr;
 	dma_addr_t dma_addr;
-	struct dma_attrs dma_attrs;
+	/* Used when IOMMU is disabled */
+	unsigned long dma_attrs;
+
+	/* Used when IOMMU is enabled */
+	struct drm_mm_node mm;
+	unsigned long num_pages;
+	struct page **pages;
+	struct sg_table *sgt;
+	size_t size;
 };
 
 struct sg_table *rockchip_gem_prime_get_sg_table(struct drm_gem_object *obj);
@@ -41,7 +49,8 @@ int rockchip_gem_mmap_buf(struct drm_gem_object *obj,
 			  struct vm_area_struct *vma);
 
 struct rockchip_gem_object *
-	rockchip_gem_create_object(struct drm_device *drm, unsigned int size);
+	rockchip_gem_create_object(struct drm_device *drm, unsigned int size,
+				   bool alloc_kmap);
 
 void rockchip_gem_free_object(struct drm_gem_object *obj);
 

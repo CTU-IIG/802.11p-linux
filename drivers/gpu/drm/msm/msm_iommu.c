@@ -24,32 +24,37 @@ struct msm_iommu {
 };
 #define to_msm_iommu(x) container_of(x, struct msm_iommu, base)
 
-static int msm_fault_handler(struct iommu_domain *iommu, struct device *dev,
+static int msm_fault_handler(struct iommu_domain *domain, struct device *dev,
 		unsigned long iova, int flags, void *arg)
 {
+	struct msm_iommu *iommu = arg;
+	if (iommu->base.handler)
+		return iommu->base.handler(iommu->base.arg, iova, flags);
 	pr_warn_ratelimited("*** fault: iova=%08lx, flags=%d\n", iova, flags);
 	return 0;
 }
 
-static int msm_iommu_attach(struct msm_mmu *mmu, const char **names, int cnt)
+static int msm_iommu_attach(struct msm_mmu *mmu, const char * const *names,
+			    int cnt)
 {
 	struct msm_iommu *iommu = to_msm_iommu(mmu);
 	return iommu_attach_device(iommu->domain, mmu->dev);
 }
 
-static void msm_iommu_detach(struct msm_mmu *mmu, const char **names, int cnt)
+static void msm_iommu_detach(struct msm_mmu *mmu, const char * const *names,
+			     int cnt)
 {
 	struct msm_iommu *iommu = to_msm_iommu(mmu);
 	iommu_detach_device(iommu->domain, mmu->dev);
 }
 
-static int msm_iommu_map(struct msm_mmu *mmu, uint32_t iova,
+static int msm_iommu_map(struct msm_mmu *mmu, uint64_t iova,
 		struct sg_table *sgt, unsigned len, int prot)
 {
 	struct msm_iommu *iommu = to_msm_iommu(mmu);
 	struct iommu_domain *domain = iommu->domain;
 	struct scatterlist *sg;
-	unsigned int da = iova;
+	unsigned long da = iova;
 	unsigned int i, j;
 	int ret;
 
@@ -57,10 +62,10 @@ static int msm_iommu_map(struct msm_mmu *mmu, uint32_t iova,
 		return -EINVAL;
 
 	for_each_sg(sgt->sgl, sg, sgt->nents, i) {
-		u32 pa = sg_phys(sg) - sg->offset;
+		dma_addr_t pa = sg_phys(sg) - sg->offset;
 		size_t bytes = sg->length + sg->offset;
 
-		VERB("map[%d]: %08x %08x(%x)", i, iova, pa, bytes);
+		VERB("map[%d]: %08lx %08lx(%zx)", i, da, (unsigned long)pa, bytes);
 
 		ret = iommu_map(domain, da, pa, bytes, prot);
 		if (ret)
@@ -82,13 +87,13 @@ fail:
 	return ret;
 }
 
-static int msm_iommu_unmap(struct msm_mmu *mmu, uint32_t iova,
+static int msm_iommu_unmap(struct msm_mmu *mmu, uint64_t iova,
 		struct sg_table *sgt, unsigned len)
 {
 	struct msm_iommu *iommu = to_msm_iommu(mmu);
 	struct iommu_domain *domain = iommu->domain;
 	struct scatterlist *sg;
-	unsigned int da = iova;
+	unsigned long da = iova;
 	int i;
 
 	for_each_sg(sgt->sgl, sg, sgt->nents, i) {
@@ -99,7 +104,7 @@ static int msm_iommu_unmap(struct msm_mmu *mmu, uint32_t iova,
 		if (unmapped < bytes)
 			return unmapped;
 
-		VERB("unmap[%d]: %08x(%x)", i, iova, bytes);
+		VERB("unmap[%d]: %08lx(%zx)", i, da, bytes);
 
 		BUG_ON(!PAGE_ALIGNED(bytes));
 
@@ -134,7 +139,7 @@ struct msm_mmu *msm_iommu_new(struct device *dev, struct iommu_domain *domain)
 
 	iommu->domain = domain;
 	msm_mmu_init(&iommu->base, dev, &funcs);
-	iommu_set_fault_handler(domain, msm_fault_handler, dev);
+	iommu_set_fault_handler(domain, msm_fault_handler, iommu);
 
 	return &iommu->base;
 }

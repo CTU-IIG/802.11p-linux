@@ -2,6 +2,7 @@
 #include "evsel.h"
 #include "cpumap.h"
 #include "parse-events.h"
+#include <errno.h>
 #include <api/fs/fs.h>
 #include "util.h"
 #include "cloexec.h"
@@ -20,7 +21,7 @@ static int perf_do_probe_api(setup_probe_fn_t fn, int cpu, const char *str)
 	if (!evlist)
 		return -ENOMEM;
 
-	if (parse_events(evlist, str))
+	if (parse_events(evlist, str, NULL))
 		goto out_delete;
 
 	evsel = perf_evlist__first(evlist);
@@ -64,7 +65,7 @@ static bool perf_probe_api(setup_probe_fn_t fn)
 	if (!cpus)
 		return false;
 	cpu = cpus->map[0];
-	cpu_map__delete(cpus);
+	cpu_map__put(cpus);
 
 	do {
 		ret = perf_do_probe_api(fn, cpu, try[i++]);
@@ -85,6 +86,11 @@ static void perf_probe_comm_exec(struct perf_evsel *evsel)
 	evsel->attr.comm_exec = 1;
 }
 
+static void perf_probe_context_switch(struct perf_evsel *evsel)
+{
+	evsel->attr.context_switch = 1;
+}
+
 bool perf_can_sample_identifier(void)
 {
 	return perf_probe_api(perf_probe_sample_identifier);
@@ -95,7 +101,37 @@ static bool perf_can_comm_exec(void)
 	return perf_probe_api(perf_probe_comm_exec);
 }
 
-void perf_evlist__config(struct perf_evlist *evlist, struct record_opts *opts)
+bool perf_can_record_switch_events(void)
+{
+	return perf_probe_api(perf_probe_context_switch);
+}
+
+bool perf_can_record_cpu_wide(void)
+{
+	struct perf_event_attr attr = {
+		.type = PERF_TYPE_SOFTWARE,
+		.config = PERF_COUNT_SW_CPU_CLOCK,
+		.exclude_kernel = 1,
+	};
+	struct cpu_map *cpus;
+	int cpu, fd;
+
+	cpus = cpu_map__new(NULL);
+	if (!cpus)
+		return false;
+	cpu = cpus->map[0];
+	cpu_map__put(cpus);
+
+	fd = sys_perf_event_open(&attr, -1, cpu, -1, 0);
+	if (fd < 0)
+		return false;
+	close(fd);
+
+	return true;
+}
+
+void perf_evlist__config(struct perf_evlist *evlist, struct record_opts *opts,
+			 struct callchain_param *callchain)
 {
 	struct perf_evsel *evsel;
 	bool use_sample_identifier = false;
@@ -113,22 +149,31 @@ void perf_evlist__config(struct perf_evlist *evlist, struct record_opts *opts)
 
 	use_comm_exec = perf_can_comm_exec();
 
-	evlist__for_each(evlist, evsel) {
-		perf_evsel__config(evsel, opts);
+	evlist__for_each_entry(evlist, evsel) {
+		perf_evsel__config(evsel, opts, callchain);
 		if (evsel->tracking && use_comm_exec)
 			evsel->attr.comm_exec = 1;
 	}
 
-	if (evlist->nr_entries > 1) {
+	if (opts->full_auxtrace) {
+		/*
+		 * Need to be able to synthesize and parse selected events with
+		 * arbitrary sample types, which requires always being able to
+		 * match the id.
+		 */
+		use_sample_identifier = perf_can_sample_identifier();
+		evlist__for_each_entry(evlist, evsel)
+			perf_evsel__set_sample_id(evsel, use_sample_identifier);
+	} else if (evlist->nr_entries > 1) {
 		struct perf_evsel *first = perf_evlist__first(evlist);
 
-		evlist__for_each(evlist, evsel) {
+		evlist__for_each_entry(evlist, evsel) {
 			if (evsel->attr.sample_type == first->attr.sample_type)
 				continue;
 			use_sample_identifier = perf_can_sample_identifier();
 			break;
 		}
-		evlist__for_each(evlist, evsel)
+		evlist__for_each_entry(evlist, evsel)
 			perf_evsel__set_sample_id(evsel, use_sample_identifier);
 	}
 
@@ -137,16 +182,7 @@ void perf_evlist__config(struct perf_evlist *evlist, struct record_opts *opts)
 
 static int get_max_rate(unsigned int *rate)
 {
-	char path[PATH_MAX];
-	const char *procfs = procfs__mountpoint();
-
-	if (!procfs)
-		return -1;
-
-	snprintf(path, PATH_MAX,
-		 "%s/sys/kernel/perf_event_max_sample_rate", procfs);
-
-	return filename__read_int(path, (int *) rate);
+	return sysctl__read_int("kernel/perf_event_max_sample_rate", (int *)rate);
 }
 
 static int record_opts__config_freq(struct record_opts *opts)
@@ -216,7 +252,7 @@ bool perf_evlist__can_select_event(struct perf_evlist *evlist, const char *str)
 	if (!temp_evlist)
 		return false;
 
-	err = parse_events(temp_evlist, str);
+	err = parse_events(temp_evlist, str, NULL);
 	if (err)
 		goto out_delete;
 
@@ -226,7 +262,7 @@ bool perf_evlist__can_select_event(struct perf_evlist *evlist, const char *str)
 		struct cpu_map *cpus = cpu_map__new(NULL);
 
 		cpu =  cpus ? cpus->map[0] : 0;
-		cpu_map__delete(cpus);
+		cpu_map__put(cpus);
 	} else {
 		cpu = evlist->cpus->map[0];
 	}

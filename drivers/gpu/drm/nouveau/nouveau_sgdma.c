@@ -1,7 +1,7 @@
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 
-#include "nouveau_drm.h"
+#include "nouveau_drv.h"
 #include "nouveau_ttm.h"
 
 struct nouveau_sgdma_be {
@@ -9,8 +9,7 @@ struct nouveau_sgdma_be {
 	 * nouve_bo.c works properly, otherwise have to move them here
 	 */
 	struct ttm_dma_tt ttm;
-	struct drm_device *dev;
-	struct nouveau_mem *node;
+	struct nvkm_mem *node;
 };
 
 static void
@@ -25,10 +24,10 @@ nouveau_sgdma_destroy(struct ttm_tt *ttm)
 }
 
 static int
-nv04_sgdma_bind(struct ttm_tt *ttm, struct ttm_mem_reg *mem)
+nv04_sgdma_bind(struct ttm_tt *ttm, struct ttm_mem_reg *reg)
 {
 	struct nouveau_sgdma_be *nvbe = (struct nouveau_sgdma_be *)ttm;
-	struct nouveau_mem *node = mem->mm_node;
+	struct nvkm_mem *node = reg->mm_node;
 
 	if (ttm->sg) {
 		node->sg    = ttm->sg;
@@ -37,9 +36,9 @@ nv04_sgdma_bind(struct ttm_tt *ttm, struct ttm_mem_reg *mem)
 		node->sg    = NULL;
 		node->pages = nvbe->ttm.dma_address;
 	}
-	node->size = (mem->num_pages << PAGE_SHIFT) >> 12;
+	node->size = (reg->num_pages << PAGE_SHIFT) >> 12;
 
-	nouveau_vm_map(&node->vma[0], node);
+	nvkm_vm_map(&node->vma[0], node);
 	nvbe->node = node;
 	return 0;
 }
@@ -48,7 +47,7 @@ static int
 nv04_sgdma_unbind(struct ttm_tt *ttm)
 {
 	struct nouveau_sgdma_be *nvbe = (struct nouveau_sgdma_be *)ttm;
-	nouveau_vm_unmap(&nvbe->node->vma[0]);
+	nvkm_vm_unmap(&nvbe->node->vma[0]);
 	return 0;
 }
 
@@ -59,10 +58,10 @@ static struct ttm_backend_func nv04_sgdma_backend = {
 };
 
 static int
-nv50_sgdma_bind(struct ttm_tt *ttm, struct ttm_mem_reg *mem)
+nv50_sgdma_bind(struct ttm_tt *ttm, struct ttm_mem_reg *reg)
 {
 	struct nouveau_sgdma_be *nvbe = (struct nouveau_sgdma_be *)ttm;
-	struct nouveau_mem *node = mem->mm_node;
+	struct nvkm_mem *node = reg->mm_node;
 
 	/* noop: bound in move_notify() */
 	if (ttm->sg) {
@@ -72,7 +71,7 @@ nv50_sgdma_bind(struct ttm_tt *ttm, struct ttm_mem_reg *mem)
 		node->sg    = NULL;
 		node->pages = nvbe->ttm.dma_address;
 	}
-	node->size = (mem->num_pages << PAGE_SHIFT) >> 12;
+	node->size = (reg->num_pages << PAGE_SHIFT) >> 12;
 	return 0;
 }
 
@@ -101,13 +100,17 @@ nouveau_sgdma_create_ttm(struct ttm_bo_device *bdev,
 	if (!nvbe)
 		return NULL;
 
-	nvbe->dev = drm->dev;
-	if (drm->device.info.family < NV_DEVICE_INFO_V0_TESLA)
+	if (drm->client.device.info.family < NV_DEVICE_INFO_V0_TESLA)
 		nvbe->ttm.ttm.func = &nv04_sgdma_backend;
 	else
 		nvbe->ttm.ttm.func = &nv50_sgdma_backend;
 
 	if (ttm_dma_tt_init(&nvbe->ttm, bdev, size, page_flags, dummy_read_page))
+		/*
+		 * A failing ttm_dma_tt_init() will call ttm_tt_destroy()
+		 * and thus our nouveau_sgdma_destroy() hook, so we don't need
+		 * to free nvbe here.
+		 */
 		return NULL;
 	return &nvbe->ttm.ttm;
 }

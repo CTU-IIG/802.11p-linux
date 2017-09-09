@@ -21,10 +21,12 @@
 #include <linux/linkage.h>
 #include <linux/syscalls.h>
 #include <linux/tracehook.h>
+#include <linux/sched/task_stack.h>
+
 #include <asm/registers.h>
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/ucontext.h>
 #include <asm/cacheflush.h>
 #include <asm/signal.h>
@@ -239,7 +241,7 @@ asmlinkage int sys_rt_sigreturn(void)
 	sigset_t blocked;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+	current->restart_block.fn = do_no_restart_syscall;
 
 	frame = (struct rt_sigframe __user *)pt_psp(regs);
 	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))

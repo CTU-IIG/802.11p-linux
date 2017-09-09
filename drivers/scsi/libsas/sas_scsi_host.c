@@ -803,13 +803,6 @@ out:
 		    shost->host_failed, tries);
 }
 
-enum blk_eh_timer_return sas_scsi_timed_out(struct scsi_cmnd *cmd)
-{
-	scmd_dbg(cmd, "command %p timed out\n", cmd);
-
-	return BLK_EH_NOT_HANDLED;
-}
-
 int sas_ioctl(struct scsi_device *sdev, int cmd, void __user *arg)
 {
 	struct domain_device *dev = sdev_to_domain_dev(sdev);
@@ -904,13 +897,6 @@ int sas_change_queue_depth(struct scsi_device *sdev, int depth)
 	if (!sdev->tagged_supported)
 		depth = 1;
 	return scsi_change_queue_depth(sdev, depth);
-}
-
-int sas_change_queue_type(struct scsi_device *scsi_dev, int type)
-{
-	if (dev_is_sata(sdev_to_domain_dev(scsi_dev)))
-		return -EINVAL;
-	return scsi_change_queue_type(scsi_dev, type);
 }
 
 int sas_bios_param(struct scsi_device *scsi_dev,
@@ -1011,7 +997,6 @@ EXPORT_SYMBOL_GPL(sas_queuecommand);
 EXPORT_SYMBOL_GPL(sas_target_alloc);
 EXPORT_SYMBOL_GPL(sas_slave_configure);
 EXPORT_SYMBOL_GPL(sas_change_queue_depth);
-EXPORT_SYMBOL_GPL(sas_change_queue_type);
 EXPORT_SYMBOL_GPL(sas_bios_param);
 EXPORT_SYMBOL_GPL(sas_task_abort);
 EXPORT_SYMBOL_GPL(sas_phy_reset);

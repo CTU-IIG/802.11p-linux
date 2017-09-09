@@ -22,6 +22,7 @@
 #include <linux/module.h>
 #include <linux/ptrace.h>
 #include <linux/irq.h>
+#include <linux/sched/debug.h>
 
 #include <linux/kernel_stat.h>
 #include <linux/signal.h>
@@ -45,7 +46,11 @@
 asmlinkage void do_IRQ(int irq, struct pt_regs * regs)
 {
 	unsigned long sp;
-	struct pt_regs *old_regs = set_irq_regs(regs);
+	struct pt_regs *old_regs;
+
+	trace_hardirqs_off();
+
+	old_regs = set_irq_regs(regs);
 	irq_enter();
 	sp = rdsp();
 	if (unlikely((sp & (PAGE_SIZE - 1)) < (PAGE_SIZE/8))) {

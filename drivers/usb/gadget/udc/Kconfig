@@ -32,6 +32,7 @@ menu "USB Peripheral Controller"
 config USB_AT91
 	tristate "Atmel AT91 USB Device Port"
 	depends on ARCH_AT91
+	depends on OF || COMPILE_TEST
 	help
 	   Many Atmel AT91 processors (such as the AT91RM2000) have a
 	   full speed USB Device Port with support for five configurable
@@ -54,10 +55,24 @@ config USB_LPC32XX
 
 config USB_ATMEL_USBA
 	tristate "Atmel USBA"
-	depends on AVR32 || ARCH_AT91
+	depends on ((AVR32 && !OF) || ARCH_AT91)
 	help
 	  USBA is the integrated high-speed USB Device controller on
 	  the AT32AP700x, some AT91SAM9 and AT91CAP9 processors from Atmel.
+
+	  The fifo_mode parameter is used to select endpoint allocation mode.
+	  fifo_mode = 0 is used to let the driver autoconfigure the endpoints.
+	  In this case 2 banks are allocated for isochronous endpoints and
+	  only one bank is allocated for the rest of the endpoints.
+
+	  fifo_mode = 1 is a generic maximum fifo size (1024 bytes) configuration
+	  allowing the usage of ep1 - ep6
+
+	  fifo_mode = 2 is a generic performance maximum fifo size (1024 bytes)
+	  configuration allowing the usage of ep1 - ep3
+
+	  fifo_mode = 3 is a balanced performance configuration allowing the
+	  the usage of ep1 - ep8
 
 config USB_BCM63XX_UDC
 	tristate "Broadcom BCM63xx Peripheral Controller"
@@ -73,7 +88,6 @@ config USB_BCM63XX_UDC
 config USB_FSL_USB2
 	tristate "Freescale Highspeed USB DR Peripheral Controller"
 	depends on FSL_SOC || ARCH_MXC
-	select USB_FSL_MPH_DR_OF if OF
 	help
 	   Some of Freescale PowerPC and i.MX processors have a High Speed
 	   Dual-Role(DR) USB controller, which supports device mode.
@@ -127,6 +141,7 @@ config USB_OMAP
 config USB_PXA25X
 	tristate "PXA 25x or IXP 4xx"
 	depends on (ARCH_PXA && PXA25x) || ARCH_IXP4XX
+	depends on HAS_IOMEM
 	help
 	   Intel's PXA 25x series XScale ARM-5TE processors include
 	   an integrated full speed USB 1.1 device controller.  The
@@ -173,8 +188,20 @@ config USB_RENESAS_USBHS_UDC
 	   dynamically linked module called "renesas_usbhs" and force all
 	   gadget drivers to also be dynamically linked.
 
+config USB_RENESAS_USB3
+	tristate 'Renesas USB3.0 Peripheral controller'
+	depends on ARCH_RENESAS || COMPILE_TEST
+	help
+	   Renesas USB3.0 Peripheral controller is a USB peripheral controller
+	   that supports super, high, and full speed USB 3.0 data transfers.
+
+	   Say "y" to link the driver statically, or "m" to build a
+	   dynamically linked module called "renesas_usb3" and force all
+	   gadget drivers to also be dynamically linked.
+
 config USB_PXA27X
 	tristate "PXA 27x"
+	depends on HAS_IOMEM
 	help
 	   Intel's PXA 27x series XScale ARM v5TE processors include
 	   an integrated full speed USB 1.1 device controller.
@@ -198,7 +225,7 @@ config USB_S3C2410
 	  S3C2440 processors.
 
 config USB_S3C2410_DEBUG
-	boolean "S3C2410 udc debug messages"
+	bool "S3C2410 udc debug messages"
 	depends on USB_S3C2410
 
 config USB_S3C_HSUDC
@@ -232,6 +259,7 @@ config USB_MV_U3D
 
 config USB_M66592
 	tristate "Renesas M66592 USB Peripheral Controller"
+	depends on HAS_IOMEM
 	help
 	   M66592 is a discrete USB peripheral controller chip that
 	   supports both full and high speed USB 2.0 data transfers.
@@ -275,6 +303,7 @@ config USB_FSL_QE
 	   dynamically linked module called "fsl_qe_udc".
 
 config USB_NET2272
+	depends on HAS_IOMEM
 	tristate "PLX NET2272"
 	help
 	  PLX NET2272 is a USB peripheral controller which supports
@@ -287,7 +316,7 @@ config USB_NET2272
 	  gadget drivers to also be dynamically linked.
 
 config USB_NET2272_DMA
-	boolean "Support external DMA controller"
+	bool "Support external DMA controller"
 	depends on USB_NET2272 && HAS_DMA
 	help
 	  The NET2272 part can optionally support an external DMA
@@ -297,7 +326,7 @@ config USB_NET2272_DMA
 	  If unsure, say "N" here.  The driver works fine in PIO mode.
 
 config USB_NET2280
-	tristate "NetChip 228x / PLX USB338x"
+	tristate "NetChip NET228x / PLX USB3x8x"
 	depends on PCI
 	help
 	   NetChip 2280 / 2282 is a PCI based USB peripheral controller which
@@ -306,6 +335,8 @@ config USB_NET2280
 	   It has six configurable endpoints, as well as endpoint zero
 	   (for control transfers) and several endpoints with dedicated
 	   functions.
+
+	   PLX 2380 is a PCIe version of the PLX 2380.
 
 	   PLX 3380 / 3382 is a PCIe based USB peripheral controller which
 	   supports full, high speed USB 2.0 and super speed USB 3.0

@@ -45,8 +45,9 @@
 #include <asm/desc.h>
 #include <asm/setup.h>
 #include <asm/lguest.h>
-#include <asm/uaccess.h>
-#include <asm/i387.h>
+#include <linux/uaccess.h>
+#include <asm/fpu/internal.h>
+#include <asm/tlbflush.h>
 #include "../lg.h"
 
 static int cpu_had_pge;
@@ -181,6 +182,52 @@ static void run_guest_once(struct lg_cpu *cpu, struct lguest_pages *pages)
 }
 /*:*/
 
+unsigned long *lguest_arch_regptr(struct lg_cpu *cpu, size_t reg_off, bool any)
+{
+	switch (reg_off) {
+	case offsetof(struct pt_regs, bx):
+		return &cpu->regs->ebx;
+	case offsetof(struct pt_regs, cx):
+		return &cpu->regs->ecx;
+	case offsetof(struct pt_regs, dx):
+		return &cpu->regs->edx;
+	case offsetof(struct pt_regs, si):
+		return &cpu->regs->esi;
+	case offsetof(struct pt_regs, di):
+		return &cpu->regs->edi;
+	case offsetof(struct pt_regs, bp):
+		return &cpu->regs->ebp;
+	case offsetof(struct pt_regs, ax):
+		return &cpu->regs->eax;
+	case offsetof(struct pt_regs, ip):
+		return &cpu->regs->eip;
+	case offsetof(struct pt_regs, sp):
+		return &cpu->regs->esp;
+	}
+
+	/* Launcher can read these, but we don't allow any setting. */
+	if (any) {
+		switch (reg_off) {
+		case offsetof(struct pt_regs, ds):
+			return &cpu->regs->ds;
+		case offsetof(struct pt_regs, es):
+			return &cpu->regs->es;
+		case offsetof(struct pt_regs, fs):
+			return &cpu->regs->fs;
+		case offsetof(struct pt_regs, gs):
+			return &cpu->regs->gs;
+		case offsetof(struct pt_regs, cs):
+			return &cpu->regs->cs;
+		case offsetof(struct pt_regs, flags):
+			return &cpu->regs->eflags;
+		case offsetof(struct pt_regs, ss):
+			return &cpu->regs->ss;
+		}
+	}
+
+	return NULL;
+}
+
 /*M:002
  * There are hooks in the scheduler which we can register to tell when we
  * get kicked off the CPU (preempt_notifier_register()).  This would allow us
@@ -199,14 +246,6 @@ static void run_guest_once(struct lg_cpu *cpu, struct lguest_pages *pages)
  */
 void lguest_arch_run_guest(struct lg_cpu *cpu)
 {
-	/*
-	 * Remember the awfully-named TS bit?  If the Guest has asked to set it
-	 * we set it now, so we can trap and pass that trap to the Guest if it
-	 * uses the FPU.
-	 */
-	if (cpu->ts && user_has_fpu())
-		stts();
-
 	/*
 	 * SYSENTER is an optimized way of doing system calls.  We can't allow
 	 * it because it always jumps to privilege level 0.  A normal Guest
@@ -235,10 +274,6 @@ void lguest_arch_run_guest(struct lg_cpu *cpu)
 	 if (boot_cpu_has(X86_FEATURE_SEP))
 		wrmsr(MSR_IA32_SYSENTER_CS, __KERNEL_CS, 0);
 
-	/* Clear the host TS bit if it was set above. */
-	if (cpu->ts && user_has_fpu())
-		clts();
-
 	/*
 	 * If the Guest page faulted, then the cr2 register will tell us the
 	 * bad virtual address.  We have to grab this now, because once we
@@ -250,12 +285,12 @@ void lguest_arch_run_guest(struct lg_cpu *cpu)
 	/*
 	 * Similarly, if we took a trap because the Guest used the FPU,
 	 * we have to restore the FPU it expects to see.
-	 * math_state_restore() may sleep and we may even move off to
+	 * fpu__restore() may sleep and we may even move off to
 	 * a different CPU. So all the critical stuff should be done
 	 * before this.
 	 */
-	else if (cpu->regs->trapnum == 7 && !user_has_fpu())
-		math_state_restore();
+	else if (cpu->regs->trapnum == 7 && !fpregs_active())
+		fpu__restore(&current->thread.fpu);
 }
 
 /*H:130
@@ -268,110 +303,73 @@ void lguest_arch_run_guest(struct lg_cpu *cpu)
  * usually attached to a PC.
  *
  * When the Guest uses one of these instructions, we get a trap (General
- * Protection Fault) and come here.  We see if it's one of those troublesome
- * instructions and skip over it.  We return true if we did.
+ * Protection Fault) and come here.  We queue this to be sent out to the
+ * Launcher to handle.
  */
-static int emulate_insn(struct lg_cpu *cpu)
+
+/*
+ * The eip contains the *virtual* address of the Guest's instruction:
+ * we copy the instruction here so the Launcher doesn't have to walk
+ * the page tables to decode it.  We handle the case (eg. in a kernel
+ * module) where the instruction is over two pages, and the pages are
+ * virtually but not physically contiguous.
+ *
+ * The longest possible x86 instruction is 15 bytes, but we don't handle
+ * anything that strange.
+ */
+static void copy_from_guest(struct lg_cpu *cpu,
+			    void *dst, unsigned long vaddr, size_t len)
 {
-	u8 insn;
-	unsigned int insnlen = 0, in = 0, small_operand = 0;
-	/*
-	 * The eip contains the *virtual* address of the Guest's instruction:
-	 * walk the Guest's page tables to find the "physical" address.
-	 */
-	unsigned long physaddr = guest_pa(cpu, cpu->regs->eip);
+	size_t to_page_end = PAGE_SIZE - (vaddr % PAGE_SIZE);
+	unsigned long paddr;
 
-	/*
-	 * This must be the Guest kernel trying to do something, not userspace!
-	 * The bottom two bits of the CS segment register are the privilege
-	 * level.
-	 */
-	if ((cpu->regs->cs & 3) != GUEST_PL)
-		return 0;
+	BUG_ON(len > PAGE_SIZE);
 
-	/* Decoding x86 instructions is icky. */
-	insn = lgread(cpu, physaddr, u8);
-
-	/*
-	 * Around 2.6.33, the kernel started using an emulation for the
-	 * cmpxchg8b instruction in early boot on many configurations.  This
-	 * code isn't paravirtualized, and it tries to disable interrupts.
-	 * Ignore it, which will Mostly Work.
-	 */
-	if (insn == 0xfa) {
-		/* "cli", or Clear Interrupt Enable instruction.  Skip it. */
-		cpu->regs->eip++;
-		return 1;
+	/* If it goes over a page, copy in two parts. */
+	if (len > to_page_end) {
+		/* But make sure the next page is mapped! */
+		if (__guest_pa(cpu, vaddr + to_page_end, &paddr))
+			copy_from_guest(cpu, dst + to_page_end,
+					vaddr + to_page_end,
+					len - to_page_end);
+		else
+			/* Otherwise fill with zeroes. */
+			memset(dst + to_page_end, 0, len - to_page_end);
+		len = to_page_end;
 	}
 
-	/*
-	 * 0x66 is an "operand prefix".  It means a 16, not 32 bit in/out.
-	 */
-	if (insn == 0x66) {
-		small_operand = 1;
-		/* The instruction is 1 byte so far, read the next byte. */
-		insnlen = 1;
-		insn = lgread(cpu, physaddr + insnlen, u8);
-	}
+	/* This will kill the guest if it isn't mapped, but that
+	 * shouldn't happen. */
+	__lgread(cpu, dst, guest_pa(cpu, vaddr), len);
+}
 
-	/*
-	 * We can ignore the lower bit for the moment and decode the 4 opcodes
-	 * we need to emulate.
-	 */
-	switch (insn & 0xFE) {
-	case 0xE4: /* in     <next byte>,%al */
-		insnlen += 2;
-		in = 1;
-		break;
-	case 0xEC: /* in     (%dx),%al */
-		insnlen += 1;
-		in = 1;
-		break;
-	case 0xE6: /* out    %al,<next byte> */
-		insnlen += 2;
-		break;
-	case 0xEE: /* out    %al,(%dx) */
-		insnlen += 1;
-		break;
-	default:
-		/* OK, we don't know what this is, can't emulate. */
-		return 0;
-	}
 
-	/*
-	 * If it was an "IN" instruction, they expect the result to be read
-	 * into %eax, so we change %eax.  We always return all-ones, which
-	 * traditionally means "there's nothing there".
-	 */
-	if (in) {
-		/* Lower bit tells means it's a 32/16 bit access */
-		if (insn & 0x1) {
-			if (small_operand)
-				cpu->regs->eax |= 0xFFFF;
-			else
-				cpu->regs->eax = 0xFFFFFFFF;
-		} else
-			cpu->regs->eax |= 0xFF;
-	}
-	/* Finally, we've "done" the instruction, so move past it. */
-	cpu->regs->eip += insnlen;
-	/* Success! */
-	return 1;
+static void setup_emulate_insn(struct lg_cpu *cpu)
+{
+	cpu->pending.trap = 13;
+	copy_from_guest(cpu, cpu->pending.insn, cpu->regs->eip,
+			sizeof(cpu->pending.insn));
+}
+
+static void setup_iomem_insn(struct lg_cpu *cpu, unsigned long iomem_addr)
+{
+	cpu->pending.trap = 14;
+	cpu->pending.addr = iomem_addr;
+	copy_from_guest(cpu, cpu->pending.insn, cpu->regs->eip,
+			sizeof(cpu->pending.insn));
 }
 
 /*H:050 Once we've re-enabled interrupts, we look at why the Guest exited. */
 void lguest_arch_handle_trap(struct lg_cpu *cpu)
 {
+	unsigned long iomem_addr;
+
 	switch (cpu->regs->trapnum) {
 	case 13: /* We've intercepted a General Protection Fault. */
-		/*
-		 * Check if this was one of those annoying IN or OUT
-		 * instructions which we need to emulate.  If so, we just go
-		 * back into the Guest after we've done it.
-		 */
+		/* Hand to Launcher to emulate those pesky IN and OUT insns */
 		if (cpu->regs->errcode == 0) {
-			if (emulate_insn(cpu))
-				return;
+			setup_emulate_insn(cpu);
+			return;
 		}
 		break;
 	case 14: /* We've intercepted a Page Fault. */
@@ -386,8 +384,15 @@ void lguest_arch_handle_trap(struct lg_cpu *cpu)
 		 * whether kernel or userspace code.
 		 */
 		if (demand_page(cpu, cpu->arch.last_pagefault,
-				cpu->regs->errcode))
+				cpu->regs->errcode, &iomem_addr))
 			return;
+
+		/* Was this an access to memory mapped IO? */
+		if (iomem_addr) {
+			/* Tell Launcher, let it handle it. */
+			setup_iomem_insn(cpu, iomem_addr);
+			return;
+		}
 
 		/*
 		 * OK, it's really not there (or not OK): the Guest needs to
@@ -404,16 +409,15 @@ void lguest_arch_handle_trap(struct lg_cpu *cpu)
 			kill_guest(cpu, "Writing cr2");
 		break;
 	case 7: /* We've intercepted a Device Not Available fault. */
-		/*
-		 * If the Guest doesn't want to know, we already restored the
-		 * Floating Point Unit, so we just continue without telling it.
-		 */
-		if (!cpu->ts)
-			return;
+		/* No special handling is needed here. */
 		break;
 	case 32 ... 255:
+		/* This might be a syscall. */
+		if (could_be_syscall(cpu->regs->trapnum))
+			break;
+
 		/*
-		 * These values mean a real interrupt occurred, in which case
+		 * Other values mean a real interrupt occurred, in which case
 		 * the Host handler has already been run. We just do a
 		 * friendly check if another process should now be run, then
 		 * return to run the Guest again.
@@ -452,9 +456,9 @@ void lguest_arch_handle_trap(struct lg_cpu *cpu)
 static void adjust_pge(void *on)
 {
 	if (on)
-		write_cr4(read_cr4() | X86_CR4_PGE);
+		cr4_set_bits(X86_CR4_PGE);
 	else
-		write_cr4(read_cr4() & ~X86_CR4_PGE);
+		cr4_clear_bits(X86_CR4_PGE);
 }
 
 /*H:020
@@ -500,7 +504,7 @@ void __init lguest_arch_host_init(void)
 		 * byte, not the size, hence the "-1").
 		 */
 		state->host_gdt_desc.size = GDT_SIZE-1;
-		state->host_gdt_desc.address = (long)get_cpu_gdt_table(i);
+		state->host_gdt_desc.address = (long)get_cpu_gdt_rw(i);
 
 		/*
 		 * All CPUs on the Host use the same Interrupt Descriptor
@@ -550,8 +554,8 @@ void __init lguest_arch_host_init(void)
 		 * The Host needs to be able to use the LGUEST segments on this
 		 * CPU, too, so put them in the Host GDT.
 		 */
-		get_cpu_gdt_table(i)[GDT_ENTRY_LGUEST_CS] = FULL_EXEC_SEGMENT;
-		get_cpu_gdt_table(i)[GDT_ENTRY_LGUEST_DS] = FULL_SEGMENT;
+		get_cpu_gdt_rw(i)[GDT_ENTRY_LGUEST_CS] = FULL_EXEC_SEGMENT;
+		get_cpu_gdt_rw(i)[GDT_ENTRY_LGUEST_DS] = FULL_SEGMENT;
 	}
 
 	/*
@@ -582,7 +586,7 @@ void __init lguest_arch_host_init(void)
 	 * doing this.
 	 */
 	get_online_cpus();
-	if (cpu_has_pge) { /* We have a broader idea of "global". */
+	if (boot_cpu_has(X86_FEATURE_PGE)) { /* We have a broader idea of "global". */
 		/* Remember that this was originally set (for cleanup). */
 		cpu_had_pge = 1;
 		/*

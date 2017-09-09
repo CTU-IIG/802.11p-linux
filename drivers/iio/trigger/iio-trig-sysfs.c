@@ -135,6 +135,7 @@ static int iio_sysfs_trigger_probe(int id)
 	struct iio_sysfs_trig *t;
 	int ret;
 	bool foundit = false;
+
 	mutex_lock(&iio_sysfs_trig_list_mut);
 	list_for_each_entry(t, &iio_sysfs_trig_list, l)
 		if (id == t->id) {
@@ -173,7 +174,7 @@ static int iio_sysfs_trigger_probe(int id)
 	return 0;
 
 out2:
-	iio_trigger_put(t->trig);
+	iio_trigger_free(t->trig);
 free_t:
 	kfree(t);
 out1:
@@ -185,6 +186,7 @@ static int iio_sysfs_trigger_remove(int id)
 {
 	bool foundit = false;
 	struct iio_sysfs_trig *t;
+
 	mutex_lock(&iio_sysfs_trig_list_mut);
 	list_for_each_entry(t, &iio_sysfs_trig_list, l)
 		if (id == t->id) {

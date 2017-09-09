@@ -70,16 +70,16 @@ XFER  = YTMP0
 BYTE_FLIP_MASK  = %ymm9
 
 # 1st arg
-INP         = %rdi
+CTX         = %rdi
 # 2nd arg
-CTX         = %rsi
+INP         = %rsi
 # 3rd arg
 NUM_BLKS    = %rdx
 
 c           = %rcx
 d           = %r8
 e           = %rdx
-y3          = %rdi
+y3          = %rsi
 
 TBL   = %rbp
 
@@ -562,7 +562,7 @@ frame_size = frame_GPRSAVE + GPRSAVE_SIZE
 .endm
 
 ########################################################################
-# void sha512_transform_rorx(const void* M, void* D, uint64_t L)#
+# void sha512_transform_rorx(void* D, const void* M, uint64_t L)#
 # Purpose: Updates the SHA512 digest stored at D with the message stored in M.
 # The size of the message pointed to by M must be an integer multiple of SHA512
 #   message blocks.
@@ -684,8 +684,11 @@ ENDPROC(sha512_transform_rorx)
 ########################################################################
 ### Binary Data
 
-.data
 
+# Mergeable 640-byte rodata section. This allows linker to merge the table
+# with other, exactly the same 640-byte fragment of another rodata section
+# (if such section exists).
+.section	.rodata.cst640.K512, "aM", @progbits, 640
 .align 64
 # K[t] used in SHA512 hashing
 K512:
@@ -730,14 +733,17 @@ K512:
 	.quad	0x4cc5d4becb3e42b6,0x597f299cfc657e2a
 	.quad	0x5fcb6fab3ad6faec,0x6c44198c4a475817
 
+.section	.rodata.cst32.PSHUFFLE_BYTE_FLIP_MASK, "aM", @progbits, 32
 .align 32
-
 # Mask for byte-swapping a couple of qwords in an XMM register using (v)pshufb.
 PSHUFFLE_BYTE_FLIP_MASK:
 	.octa 0x08090a0b0c0d0e0f0001020304050607
 	.octa 0x18191a1b1c1d1e1f1011121314151617
 
+.section	.rodata.cst32.MASK_YMM_LO, "aM", @progbits, 32
+.align 32
 MASK_YMM_LO:
 	.octa 0x00000000000000000000000000000000
 	.octa 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+
 #endif

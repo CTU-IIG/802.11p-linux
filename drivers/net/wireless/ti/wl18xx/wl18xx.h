@@ -26,10 +26,10 @@
 
 /* minimum FW required for driver */
 #define WL18XX_CHIP_VER		8
-#define WL18XX_IFTYPE_VER	8
+#define WL18XX_IFTYPE_VER	9
 #define WL18XX_MAJOR_VER	WLCORE_FW_VER_IGNORE
 #define WL18XX_SUBTYPE_VER	WLCORE_FW_VER_IGNORE
-#define WL18XX_MINOR_VER	13
+#define WL18XX_MINOR_VER	58
 
 #define WL18XX_CMD_MAX_SIZE          740
 
@@ -125,7 +125,11 @@ struct wl18xx_fw_packet_counters {
 	/* Tx rate of the last transmitted packet */
 	u8 tx_last_rate;
 
-	u8 padding[2];
+	/* Tx rate or Tx rate estimate pre-calculated by fw in mbps units */
+	u8 tx_last_rate_mbps;
+
+	/* hlid for which the rates were reported */
+	u8 hlid;
 } __packed;
 
 /* FW status registers */

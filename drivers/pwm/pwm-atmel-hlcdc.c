@@ -64,6 +64,9 @@ static int atmel_hlcdc_pwm_config(struct pwm_chip *c,
 
 	if (!chip->errata || !chip->errata->slow_clk_erratum) {
 		clk_freq = clk_get_rate(new_clk);
+		if (!clk_freq)
+			return -EINVAL;
+
 		clk_period_ns = (u64)NSEC_PER_SEC * 256;
 		do_div(clk_period_ns, clk_freq);
 	}
@@ -73,6 +76,9 @@ static int atmel_hlcdc_pwm_config(struct pwm_chip *c,
 	    clk_period_ns > period_ns) {
 		new_clk = hlcdc->sys_clk;
 		clk_freq = clk_get_rate(new_clk);
+		if (!clk_freq)
+			return -EINVAL;
+
 		clk_period_ns = (u64)NSEC_PER_SEC * 256;
 		do_div(clk_period_ns, clk_freq);
 	}
@@ -212,15 +218,28 @@ static const struct atmel_hlcdc_pwm_errata atmel_hlcdc_pwm_sama5d3_errata = {
 
 static const struct of_device_id atmel_hlcdc_dt_ids[] = {
 	{
+		.compatible = "atmel,at91sam9n12-hlcdc",
+		/* 9n12 has same errata as 9x5 HLCDC PWM */
+		.data = &atmel_hlcdc_pwm_at91sam9x5_errata,
+	},
+	{
 		.compatible = "atmel,at91sam9x5-hlcdc",
 		.data = &atmel_hlcdc_pwm_at91sam9x5_errata,
+	},
+	{
+		.compatible = "atmel,sama5d2-hlcdc",
 	},
 	{
 		.compatible = "atmel,sama5d3-hlcdc",
 		.data = &atmel_hlcdc_pwm_sama5d3_errata,
 	},
+	{
+		.compatible = "atmel,sama5d4-hlcdc",
+		.data = &atmel_hlcdc_pwm_sama5d3_errata,
+	},
 	{ /* sentinel */ },
 };
+MODULE_DEVICE_TABLE(of, atmel_hlcdc_dt_ids);
 
 static int atmel_hlcdc_pwm_probe(struct platform_device *pdev)
 {
@@ -251,9 +270,8 @@ static int atmel_hlcdc_pwm_probe(struct platform_device *pdev)
 	chip->chip.npwm = 1;
 	chip->chip.of_xlate = of_pwm_xlate_with_flags;
 	chip->chip.of_pwm_n_cells = 3;
-	chip->chip.can_sleep = 1;
 
-	ret = pwmchip_add(&chip->chip);
+	ret = pwmchip_add_with_polarity(&chip->chip, PWM_POLARITY_INVERSED);
 	if (ret) {
 		clk_disable_unprepare(hlcdc->periph_clk);
 		return ret;
